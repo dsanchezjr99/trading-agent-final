@@ -114,7 +114,17 @@ tbody tr:hover td { background: #2a2e39 !important; }
     border: 1px solid #2a2e39 !important;
     border-radius: 8px !important;
 }
-[data-testid="stExpander"] summary { color: #d1d4dc !important; }
+[data-testid="stExpander"] summary {
+    color: #d1d4dc !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.06em !important;
+    text-transform: uppercase !important;
+}
+/* Hide the raw "_arrow_right" icon text that leaks in some Streamlit versions */
+[data-testid="stExpander"] summary svg { display: none !important; }
+[data-testid="stExpander"] summary span[data-testid="stExpanderToggleIcon"] { display: none !important; }
+details[data-testid="stExpander"] > summary > span:first-child { display: none !important; }
 
 /* ── Dividers ── */
 hr { border-color: #2a2e39 !important; margin: 8px 0 !important; }

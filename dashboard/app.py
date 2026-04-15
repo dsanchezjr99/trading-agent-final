@@ -594,17 +594,38 @@ with right:
 # ── Trade history ─────────────────────────────────────────────────────────────
 
 st.markdown("<br>", unsafe_allow_html=True)
-st.markdown('<div class="tv-card-title" style="margin-bottom:8px;">TRADE HISTORY — LAST 7 DAYS</div>', unsafe_allow_html=True)
 
 recent = _load_events(days=7)
 trades = [e for e in recent if e.get("event") == "order_placed"]
 closes = [e for e in recent if e.get("event") in ("hard_exit", "ai_close", "stop_loss_close", "take_profit_close")]
+all_trades = sorted(trades + closes, key=lambda x: x.get("timestamp", ""), reverse=True)
 
-if not trades and not closes:
-    st.markdown('<div style="color:#787b86; font-size:13px; padding:8px 0;">No trade history in the last 7 days.</div>', unsafe_allow_html=True)
+history_html = """
+<div style="background:#1e222d; border:1px solid #2a2e39; border-radius:10px;
+            padding:16px 20px;">
+    <div style="font-size:11px; font-weight:600; letter-spacing:0.08em;
+                text-transform:uppercase; color:#787b86; margin-bottom:12px;">
+        Trade History — Last 7 Days
+    </div>
+"""
+
+if not all_trades:
+    history_html += '<div style="color:#787b86; font-size:13px; padding:8px 0;">No trade history in the last 7 days.</div>'
 else:
-    hist = []
-    for e in sorted(trades + closes, key=lambda x: x.get("timestamp", ""), reverse=True):
+    # Column headers
+    history_html += """
+    <div style="display:grid; grid-template-columns:90px 60px 70px 90px 60px 110px 1fr;
+                gap:8px; padding:0 8px 8px; border-bottom:1px solid #2a2e39; margin-bottom:6px;">
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.06em;">Date</span>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.06em;">Type</span>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.06em;">Ticker</span>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.06em;">Amount</span>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.06em;">Conf</span>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.06em;">P&L</span>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.06em;">Reason</span>
+    </div>
+    """
+    for e in all_trades[:30]:
         ts     = e.get("timestamp", "")[:19].replace("T", " ")
         event  = e.get("event", "")
         ticker = e.get("ticker") or (e.get("order") or {}).get("ticker", "—")
@@ -612,31 +633,37 @@ else:
         result = e.get("result", {}) or {}
         pnl    = result.get("realized_pnl")
 
-        hist.append({
-            "Time":    ts,
-            "Type":    "BUY" if event == "order_placed" else "CLOSE",
-            "Ticker":  ticker,
-            "Amount":  f"${order.get('dollar_amount',0):,.0f}" if event == "order_placed" else "—",
-            "Conf":    f"{order.get('confidence',0):.0%}"      if event == "order_placed" else "—",
-            "P&L":     f"{'+'if pnl and pnl>=0 else ''}${pnl:,.2f}" if pnl is not None else "—",
-            "Reason":  (order.get("reasoning","") if event == "order_placed"
-                        else e.get("reason", event.replace("_"," ")))[:90],
-        })
+        is_buy  = event == "order_placed"
+        t_badge = '<span class="badge badge-green">BUY</span>' if is_buy else '<span class="badge badge-red">CLOSE</span>'
+        row_bg  = "#1a2e2820" if is_buy else "#2e1a1a20"
 
-    df_hist = pd.DataFrame(hist)
+        amount  = f"${order.get('dollar_amount', 0):,.0f}" if is_buy else "—"
+        conf    = f"{order.get('confidence', 0):.0%}"      if is_buy else "—"
+        reason  = (order.get("reasoning", "") if is_buy else e.get("reason", event.replace("_", " ")))[:70]
 
-    def _color_hist(row):
-        t = row["Type"]
-        if t == "BUY":
-            return ["background-color: #1a2e28"] * len(row)
-        return ["background-color: #2e1a1a"] * len(row)
+        if pnl is not None:
+            pnl_color = "#26a69a" if pnl >= 0 else "#ef5350"
+            pnl_str   = f'<span style="color:{pnl_color}; font-weight:600;">{"+" if pnl >= 0 else ""}${pnl:,.2f}</span>'
+        else:
+            pnl_str = '<span style="color:#787b86;">—</span>'
 
-    st.dataframe(
-        df_hist.style.apply(_color_hist, axis=1),
-        width="stretch",
-        hide_index=True,
-        height=min(42 * len(hist) + 38, 320),
-    )
+        history_html += f"""
+        <div style="display:grid; grid-template-columns:90px 60px 70px 90px 60px 110px 1fr;
+                    gap:8px; padding:8px; border-radius:6px; margin-bottom:2px;
+                    background:{row_bg}; align-items:center;">
+            <span style="font-size:11px; color:#787b86;">{ts[5:]}</span>
+            {t_badge}
+            <span style="font-size:13px; font-weight:700; color:#d1d4dc;">{ticker}</span>
+            <span style="font-size:13px; color:#d1d4dc;">{amount}</span>
+            <span style="font-size:13px; color:#d1d4dc;">{conf}</span>
+            {pnl_str}
+            <span style="font-size:11px; color:#787b86; white-space:nowrap;
+                         overflow:hidden; text-overflow:ellipsis;">{reason}</span>
+        </div>
+        """
+
+history_html += "</div>"
+st.markdown(history_html, unsafe_allow_html=True)
 
 
 # ── Signal analyses (expandable) ─────────────────────────────────────────────
@@ -646,33 +673,36 @@ with st.expander("AI Signal Analyses — Last 24h", expanded=False):
     if not analyses:
         st.markdown('<span style="color:#787b86; font-size:13px;">No analyses in the last 24 hours.</span>', unsafe_allow_html=True)
     else:
-        sig_rows = []
-        for e in reversed(analyses[-50:]):
+        sig_html = """
+        <div style="display:flex; flex-direction:column; gap:4px;">
+        """
+        for e in reversed(analyses[-40:]):
             d      = e.get("decision", {})
             action = d.get("action", "—")
-            sig_rows.append({
-                "Time":       e.get("timestamp","")[:19].replace("T"," "),
-                "Ticker":     e.get("ticker","—"),
-                "Action":     action,
-                "Confidence": f"{d.get('confidence',0):.0%}",
-                "Risk":       d.get("risk_level","—"),
-                "Sector":     d.get("sector","—"),
-                "Reasoning":  d.get("reasoning","")[:100],
-            })
+            conf   = d.get("confidence", 0)
+            ticker = e.get("ticker", "—")
+            ts     = e.get("timestamp", "")[:19][11:]
+            reason = d.get("reasoning", "")[:120]
 
-        def _color_sig(row):
-            a = row["Action"]
-            if a == "BUY":
-                return ["background-color: #1a2e28"] * len(row)
-            if a == "SELL":
-                return ["background-color: #2e1a1a"] * len(row)
-            return ["background-color: #1e222d"] * len(row)
+            a_color = "#26a69a" if action == "BUY" else "#ef5350" if action == "SELL" else "#787b86"
+            a_bg    = "rgba(38,166,154,0.12)" if action == "BUY" else "rgba(239,83,80,0.12)" if action == "SELL" else "rgba(120,123,134,0.12)"
 
-        st.dataframe(
-            pd.DataFrame(sig_rows).style.apply(_color_sig, axis=1),
-            width="stretch",
-            hide_index=True,
-        )
+            sig_html += f"""
+            <div style="background:#131722; border:1px solid #2a2e39; border-radius:6px;
+                        padding:8px 12px; display:grid;
+                        grid-template-columns:55px 70px 60px 70px 60px 1fr; gap:8px; align-items:center;">
+                <span style="font-size:10px; color:#787b86;">{ts}</span>
+                <span style="font-size:13px; font-weight:700; color:#d1d4dc;">{ticker}</span>
+                <span style="background:{a_bg}; color:{a_color}; font-size:11px; font-weight:600;
+                             padding:2px 7px; border-radius:4px; text-align:center;">{action}</span>
+                <span style="font-size:12px; color:#d1d4dc;">{conf:.0%}</span>
+                <span style="font-size:11px; color:#787b86;">{d.get('risk_level','—')}</span>
+                <span style="font-size:11px; color:#787b86; white-space:nowrap;
+                             overflow:hidden; text-overflow:ellipsis;">{reason}</span>
+            </div>
+            """
+        sig_html += "</div>"
+        st.markdown(sig_html, unsafe_allow_html=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 

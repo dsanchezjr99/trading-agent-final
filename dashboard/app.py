@@ -123,42 +123,129 @@ def _load_events(days: int = 7) -> list[dict]:
 def _pct_color(val: float) -> str:
     return RH_GREEN if val >= 0 else RH_RED
 
-def _portfolio_chart(history: list[dict]) -> go.Figure | None:
-    if len(history) < 2:
-        return None
-    df    = pd.DataFrame(history).drop_duplicates("date").sort_values("date")
-    start = df["value"].iloc[0]
-    end   = df["value"].iloc[-1]
-    up    = end >= start
+def _portfolio_chart(history: list[dict], days_filter: int | None = None) -> go.Figure:
+    """
+    Build portfolio progress chart. Always includes today's live value so
+    there's always at least one point even before the first balance_sync.
+    days_filter: limit to last N days (None = all time).
+    """
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Deduplicate and sort
+    seen, points = set(), []
+    for h in history:
+        if h["date"] not in seen and h["value"] > 0:
+            seen.add(h["date"])
+            points.append(h)
+    points.sort(key=lambda x: x["date"])
+
+    # Always append live value as today's point
+    if portfolio_val > 0:
+        if points and points[-1]["date"] == today_str:
+            points[-1]["value"] = portfolio_val
+        else:
+            points.append({"date": today_str, "value": portfolio_val})
+
+    # Apply time filter
+    if days_filter and len(points) > 1:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_filter)).strftime("%Y-%m-%d")
+        filtered = [p for p in points if p["date"] >= cutoff]
+        points = filtered if len(filtered) >= 2 else points[-2:]
+
+    if len(points) < 2:
+        # Only one point — flat line to show current value
+        points = [{"date": today_str, "value": portfolio_val},
+                  {"date": today_str, "value": portfolio_val}]
+
+    dates  = [p["date"] for p in points]
+    values = [p["value"] for p in points]
+    start  = values[0]
+    end    = values[-1]
+    up     = end >= start
+    color  = RH_GREEN if up else RH_RED
+    fill   = "rgba(0,200,5,0.10)" if up else "rgba(255,80,0,0.10)"
+
+    # $ and % change vs start of visible window
+    chg     = end - start
+    chg_pct = (chg / start * 100) if start else 0
+    chg_str = f'{"+" if chg >= 0 else ""}${chg:,.2f} ({"+" if chg_pct >= 0 else ""}{chg_pct:.2f}%)'
 
     fig = go.Figure()
-    # Gradient fill
+
+    # Baseline reference line
+    fig.add_hline(
+        y=start,
+        line=dict(color="#333", width=1, dash="dot"),
+    )
+
+    # Fill area
     fig.add_trace(go.Scatter(
-        x    = df["date"].tolist() + df["date"].tolist()[::-1],
-        y    = df["value"].tolist() + [start] * len(df),
-        fill = "toself",
-        fillcolor = "rgba(0,200,5,0.08)" if up else "rgba(255,80,0,0.08)",
-        line = dict(width=0),
+        x         = dates + dates[::-1],
+        y         = values + [start] * len(values),
+        fill      = "toself",
+        fillcolor = fill,
+        line      = dict(width=0),
         hoverinfo = "skip",
-        showlegend = False,
+        showlegend= False,
     ))
+
     # Main line
     fig.add_trace(go.Scatter(
-        x    = df["date"],
-        y    = df["value"],
-        mode = "lines",
-        line = dict(color=RH_GREEN if up else RH_RED, width=2),
-        hovertemplate = "<b>%{x}</b><br>$%{y:,.2f}<extra></extra>",
+        x             = dates,
+        y             = values,
+        mode          = "lines",
+        line          = dict(color=color, width=2.5),
+        hovertemplate = "<b>%{x}</b><br><b>$%{y:,.2f}</b><extra></extra>",
+        showlegend    = False,
+    ))
+
+    # End dot
+    fig.add_trace(go.Scatter(
+        x          = [dates[-1]],
+        y          = [end],
+        mode       = "markers",
+        marker     = dict(color=color, size=8, line=dict(color="#0f0f0f", width=2)),
+        hoverinfo  = "skip",
         showlegend = False,
     ))
+
+    # Y-axis labels (min/max)
+    y_min, y_max = min(values), max(values)
+    y_pad = (y_max - y_min) * 0.15 or 1000
+
     fig.update_layout(
-        height      = 200,
-        margin      = dict(l=0, r=0, t=0, b=0),
+        height        = 280,
+        margin        = dict(l=0, r=60, t=30, b=0),
         paper_bgcolor = "rgba(0,0,0,0)",
         plot_bgcolor  = "rgba(0,0,0,0)",
-        xaxis = dict(visible=False),
-        yaxis = dict(visible=False),
+        xaxis = dict(
+            showgrid    = False,
+            showline    = False,
+            zeroline    = False,
+            tickfont    = dict(color="#555", size=10),
+            tickformat  = "%b %d",
+            nticks      = 6,
+        ),
+        yaxis = dict(
+            showgrid    = True,
+            gridcolor   = "#1a1a1a",
+            showline    = False,
+            zeroline    = False,
+            tickprefix  = "$",
+            tickformat  = ",.0f",
+            tickfont    = dict(color="#555", size=10),
+            side        = "right",
+            range       = [y_min - y_pad, y_max + y_pad],
+        ),
         hoverlabel = dict(bgcolor="#1a1a1a", font_color="#fff", bordercolor="#333"),
+        annotations = [{
+            "text": chg_str,
+            "xref": "paper", "yref": "paper",
+            "x": 0, "y": 1.0,
+            "xanchor": "left", "yanchor": "top",
+            "font": {"color": color, "size": 12, "family": "Inter"},
+            "showarrow": False,
+        }],
     )
     return fig
 
@@ -198,9 +285,18 @@ target       = 1_000_000
 progress_pct = min(portfolio_val / target * 100, 100)
 
 history = []
-for e in _load_events(days=90):
+for e in _load_events(days=365):
     if e.get("event") == "balance_sync":
         history.append({"date": e["timestamp"][:10], "value": e.get("portfolio_value", 0)})
+
+# Add the .env starting value as anchor point if we have no earlier history
+env_start = float(os.getenv("PORTFOLIO_VALUE", 0))
+if env_start > 0:
+    # Use account creation date or earliest available date as anchor
+    earliest = min((h["date"] for h in history), default=None)
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if not earliest or earliest == today_str:
+        history.insert(0, {"date": "2026-01-01", "value": env_start})
 
 
 # ── Portfolio hero ────────────────────────────────────────────────────────────
@@ -220,25 +316,48 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Chart
-chart = _portfolio_chart(history)
-if chart:
-    st.plotly_chart(chart, width="stretch", config={"displayModeBar": False})
-else:
-    st.markdown("""
-    <div style="height:140px; border-bottom:1px solid #222;
-                display:flex; align-items:center; justify-content:center;
-                color:#333; font-size:13px;">
-        Chart appears after first trading day
-    </div>""", unsafe_allow_html=True)
+# ── Time range selector + chart ───────────────────────────────────────────────
+
+RANGES = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365, "ALL": None}
+
+if "chart_range" not in st.session_state:
+    st.session_state.chart_range = "ALL"
+
+# Render range buttons inline via CSS-styled columns
+range_cols = st.columns(len(RANGES))
+for col, (label, days) in zip(range_cols, RANGES.items()):
+    active = st.session_state.chart_range == label
+    color  = "#fff" if active else "#555"
+    bg     = "#222" if active else "transparent"
+    with col:
+        if st.button(label, key=f"range_{label}",
+                     help=f"Show {label}",
+                     use_container_width=True):
+            st.session_state.chart_range = label
+            st.rerun()
+        st.markdown(
+            f'<style>div[data-testid="stButton"] button[kind="secondary"]'
+            f'{{background:{bg}!important;color:{color}!important;'
+            f'border:none!important;font-size:12px!important;'
+            f'padding:4px!important;border-radius:4px!important;}}</style>',
+            unsafe_allow_html=True,
+        )
+
+selected_days = RANGES[st.session_state.chart_range]
+st.plotly_chart(
+    _portfolio_chart(history, days_filter=selected_days),
+    width="stretch",
+    config={"displayModeBar": False},
+)
 
 # Progress toward $1M
 st.markdown(f"""
-<div style="margin: 16px 0 4px; display:flex; justify-content:space-between; align-items:center;">
-    <span style="font-size:12px; color:#888;">Progress to $1,000,000</span>
+<div style="margin: 8px 0 4px; display:flex; justify-content:space-between; align-items:center;">
+    <span style="font-size:12px; color:#555;">$0</span>
+    <span style="font-size:12px; color:#888; font-weight:500;">Goal: $1,000,000</span>
     <span style="font-size:12px; color:{RH_GREEN}; font-weight:600;">{progress_pct:.2f}%</span>
 </div>
-<div style="background:#222; border-radius:2px; height:3px; margin-bottom:24px;">
+<div style="background:#1a1a1a; border-radius:2px; height:3px; margin-bottom:28px;">
     <div style="background:{RH_GREEN}; width:{progress_pct:.2f}%; height:100%; border-radius:2px;"></div>
 </div>
 """, unsafe_allow_html=True)

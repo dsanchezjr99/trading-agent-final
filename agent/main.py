@@ -474,7 +474,7 @@ def run() -> None:
     review_open_positions()
 
     schedule.every(POLL_INTERVAL).minutes.do(scan_new_disclosures)
-    schedule.every(30).minutes.do(review_open_positions)
+    schedule.every(15).minutes.do(review_open_positions)
     schedule.every().day.at("09:30").do(send_morning_email)
     schedule.every().day.at("16:15").do(send_eod_email)
 

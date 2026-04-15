@@ -121,30 +121,39 @@ def check_exit_conditions(positions: list[dict], meta: dict) -> dict[str, str]:
     Returns a dict of {ticker: reason} for positions that should be closed immediately.
 
     Checks:
-      1. Stop-loss  — unrealized P&L <= -STOP_LOSS_PCT
-      2. Take-profit — unrealized P&L >= TAKE_PROFIT_PCT
-      3. Hold-period expiry — days held >= suggested hold_days
+      1. Stop-loss  — P&L <= -STOP_LOSS_PCT   (skipped if Alpaca bracket handles it)
+      2. Take-profit — P&L >= TAKE_PROFIT_PCT  (skipped if Alpaca bracket handles it)
+      3. Hold-period expiry — days held >= suggested hold_days (always checked)
+
+    Positions entered with bracket orders have their stop-loss and take-profit managed
+    server-side by Alpaca in real-time. The software check is skipped for those to
+    avoid a double-close race condition; only hold-period expiry is checked.
     """
     to_close: dict[str, str] = {}
     today = __import__("datetime").date.today()
 
     for p in positions:
-        ticker  = p["symbol"]
-        pnl_pct = float(p.get("unrealized_plpc", 0.0))
+        ticker      = p["symbol"]
+        pnl_pct     = float(p.get("unrealized_plpc", 0.0))
+        has_bracket = meta.get(ticker, {}).get("has_bracket", False)
 
-        if pnl_pct <= -STOP_LOSS_PCT:
-            reason = f"stop-loss triggered: P&L {pnl_pct:+.1%} ≤ -{STOP_LOSS_PCT:.0%}"
-            print(f"[risk] {ticker}: {reason}")
-            to_close[ticker] = reason
-            continue
+        if not has_bracket:
+            # Software stop-loss and take-profit — only for positions without bracket legs
+            if pnl_pct <= -STOP_LOSS_PCT:
+                reason = f"stop-loss triggered: P&L {pnl_pct:+.1%} ≤ -{STOP_LOSS_PCT:.0%}"
+                print(f"[risk] {ticker}: {reason}")
+                to_close[ticker] = reason
+                continue
 
-        if pnl_pct >= TAKE_PROFIT_PCT:
-            reason = f"take-profit triggered: P&L {pnl_pct:+.1%} ≥ +{TAKE_PROFIT_PCT:.0%}"
-            print(f"[risk] {ticker}: {reason}")
-            to_close[ticker] = reason
-            continue
+            if pnl_pct >= TAKE_PROFIT_PCT:
+                reason = f"take-profit triggered: P&L {pnl_pct:+.1%} ≥ +{TAKE_PROFIT_PCT:.0%}"
+                print(f"[risk] {ticker}: {reason}")
+                to_close[ticker] = reason
+                continue
+        else:
+            print(f"[risk] {ticker}: bracket order active — SL/TP managed by Alpaca server-side")
 
-        # Hold-period expiry — only if we have metadata for this position
+        # Hold-period expiry — always checked regardless of bracket status
         if ticker in meta:
             entry_date = meta[ticker].get("entry_date")
             hold_days  = int(meta[ticker].get("hold_days", 30))
@@ -156,7 +165,6 @@ def check_exit_conditions(positions: list[dict], meta: dict) -> dict[str, str]:
                         reason = f"hold period expired: held {days_held}d / target {hold_days}d"
                         print(f"[risk] {ticker}: {reason} — flagging for Claude review")
                         # Don't auto-close expired holds — pass to Claude for review
-                        # We tag them so the prompt can include context
                         p["hold_expired"] = True
                         p["days_held"]    = days_held
                 except ValueError:

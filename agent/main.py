@@ -319,14 +319,22 @@ def scan_new_disclosures() -> None:
 
                 # Persist position metadata
                 meta[ticker] = {
-                    "entry_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                    "hold_days":  order.get("hold_days", 30),
-                    "sector":     sector,
+                    "entry_date":  datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    "hold_days":   order.get("hold_days", 30),
+                    "sector":      sector,
                     "entry_price": result.get("limit_price") or result.get("amount"),
+                    "has_bracket": result.get("order_type") == "bracket",
+                    "stop_price":  result.get("stop_price"),
+                    "tp_price":    result.get("tp_price"),
                 }
                 _save_meta(meta)
                 log_event({"event": "order_placed", "order": order, "result": result})
                 notify_order_placed(order, result)
+                if result.get("order_type") == "bracket":
+                    print(
+                        f"[agent] Bracket legs placed server-side: "
+                        f"stop ${result.get('stop_price')} / TP ${result.get('tp_price')}"
+                    )
 
 
 # ── Periodic portfolio review ─────────────────────────────────────────────────

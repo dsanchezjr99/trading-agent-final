@@ -121,10 +121,15 @@ def is_market_open() -> bool:
 
 # ── Order Placement ───────────────────────────────────────────────────────────
 
+STOP_LOSS_PCT   = float(os.getenv("STOP_LOSS_PCT",   0.05))
+TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", 0.20))
+
+
 def place_order(order: dict) -> dict | None:
     """
-    Submit a limit order with a 0.2% buffer above/below current price.
-    Falls back to market order if current price is unavailable.
+    Submit a bracket order for BUY entries: limit entry + server-side stop-loss
+    and take-profit legs held by Alpaca (fires in real-time, no polling lag).
+    SELL orders close existing positions and are placed as plain limit/market orders.
 
     order keys: ticker, action, dollar_amount
     """
@@ -133,29 +138,98 @@ def place_order(order: dict) -> dict | None:
     dollar_amount = order["dollar_amount"]
 
     if DRY_RUN:
-        print(f"[broker] DRY RUN — would {action.upper()} ${dollar_amount:.2f} of {ticker}")
+        price = get_current_price(ticker) or 0
+        if action == "buy" and price:
+            stop_price   = round(price * (1 - STOP_LOSS_PCT),   2)
+            tp_price     = round(price * (1 + TAKE_PROFIT_PCT), 2)
+            print(
+                f"[broker] DRY RUN — would BUY ${dollar_amount:.2f} of {ticker} "
+                f"@ ~${price:.2f} | stop ${stop_price:.2f} | take-profit ${tp_price:.2f}"
+            )
+        else:
+            print(f"[broker] DRY RUN — would {action.upper()} ${dollar_amount:.2f} of {ticker}")
         return {"dry_run": True, "ticker": ticker, "action": action, "amount": dollar_amount}
 
-    api = _get_api()
-
-    # Try limit order first
+    api   = _get_api()
     price = get_current_price(ticker)
+
+    # ── BUY: bracket order (entry limit + SL + TP held server-side by Alpaca) ──
+    if action == "buy" and price and price > 0:
+        limit_price  = round(price * 1.002, 2)
+        stop_price   = round(limit_price * (1 - STOP_LOSS_PCT),   2)
+        tp_price     = round(limit_price * (1 + TAKE_PROFIT_PCT), 2)
+        qty          = round(dollar_amount / limit_price, 4)
+        try:
+            submitted = api.submit_order(
+                symbol         = ticker,
+                qty            = str(qty),
+                side           = "buy",
+                type           = "limit",
+                limit_price    = str(limit_price),
+                time_in_force  = "day",
+                order_class    = "bracket",
+                stop_loss      = {"stop_price": str(stop_price)},
+                take_profit    = {"limit_price": str(tp_price)},
+            )
+            print(
+                f"[broker] Bracket BUY {qty} {ticker} @ ${limit_price:.2f} "
+                f"| stop ${stop_price:.2f} (-{STOP_LOSS_PCT:.0%}) "
+                f"| TP ${tp_price:.2f} (+{TAKE_PROFIT_PCT:.0%}) — id={submitted.id}"
+            )
+            return {
+                "order_id":    submitted.id,
+                "ticker":      ticker,
+                "action":      "buy",
+                "amount":      dollar_amount,
+                "qty":         qty,
+                "limit_price": limit_price,
+                "stop_price":  stop_price,
+                "tp_price":    tp_price,
+                "status":      submitted.status,
+                "order_type":  "bracket",
+            }
+        except Exception as e:
+            print(f"[broker] Bracket order failed for {ticker}: {e} — falling back to plain limit order")
+            # Fall through to plain limit below
+
+        # Fallback: plain limit order (no bracket legs)
+        try:
+            submitted = api.submit_order(
+                symbol        = ticker,
+                qty           = str(qty),
+                side          = "buy",
+                type          = "limit",
+                limit_price   = str(limit_price),
+                time_in_force = "day",
+            )
+            print(f"[broker] Plain limit BUY {qty} {ticker} @ ${limit_price:.2f} — id={submitted.id}")
+            return {
+                "order_id":    submitted.id,
+                "ticker":      ticker,
+                "action":      "buy",
+                "amount":      dollar_amount,
+                "qty":         qty,
+                "limit_price": limit_price,
+                "status":      submitted.status,
+                "order_type":  "limit",
+            }
+        except Exception as e:
+            print(f"[broker] Plain limit order also failed for {ticker}: {e} — falling back to market order")
+
+    # ── SELL or price-unavailable BUY: plain limit or market order ─────────────
     if price and price > 0:
-        limit_price = round(price * 1.002 if action == "buy" else price * 0.998, 2)
+        limit_price = round(price * (1.002 if action == "buy" else 0.998), 2)
         qty         = round(dollar_amount / limit_price, 4)
         try:
             submitted = api.submit_order(
-                symbol=ticker,
-                qty=str(qty),
-                side=action,
-                type="limit",
-                limit_price=str(limit_price),
-                time_in_force="day",
+                symbol        = ticker,
+                qty           = str(qty),
+                side          = action,
+                type          = "limit",
+                limit_price   = str(limit_price),
+                time_in_force = "day",
             )
-            print(
-                f"[broker] Limit order: {action.upper()} {qty} {ticker} "
-                f"@ ${limit_price:.2f} (≈${dollar_amount:.2f}) — id={submitted.id}"
-            )
+            print(f"[broker] Limit {action.upper()} {qty} {ticker} @ ${limit_price:.2f} — id={submitted.id}")
             return {
                 "order_id":    submitted.id,
                 "ticker":      ticker,
@@ -169,16 +243,16 @@ def place_order(order: dict) -> dict | None:
         except Exception as e:
             print(f"[broker] Limit order failed for {ticker}: {e} — falling back to market order")
 
-    # Fallback: market order (notional)
+    # Final fallback: market order (notional)
     try:
         submitted = api.submit_order(
-            symbol=ticker,
-            notional=dollar_amount,
-            side=action,
-            type="market",
-            time_in_force="day",
+            symbol        = ticker,
+            notional      = dollar_amount,
+            side          = action,
+            type          = "market",
+            time_in_force = "day",
         )
-        print(f"[broker] Market order: {action.upper()} ${dollar_amount:.2f} of {ticker} — id={submitted.id}")
+        print(f"[broker] Market {action.upper()} ${dollar_amount:.2f} of {ticker} — id={submitted.id}")
         return {
             "order_id":   submitted.id,
             "ticker":     ticker,

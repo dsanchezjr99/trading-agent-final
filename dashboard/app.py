@@ -534,137 +534,130 @@ with left:
 
 
 with right:
-
-    # ── Today's activity feed ────────────────────────────────────────────────
-    st.markdown('<div class="tv-card-title" style="margin:12px 0 6px;">TODAY\'S ACTIVITY</div>', unsafe_allow_html=True)
-
-    activity = [
-        e for e in today_events
-        if e.get("event") in (
-            "order_placed", "hard_exit", "ai_close",
-            "stop_loss_close", "take_profit_close",
-            "daily_loss_halt", "skipped_signal_gate",
-            "skipped_momentum", "skipped_liquidity",
-            "skipped_earnings", "balance_sync",
-        )
-    ]
-
-    if not activity:
-        st.markdown('<div style="color:#787b86; font-size:13px; padding:8px 0;">No activity yet today.</div>', unsafe_allow_html=True)
-    else:
-        feed_html = '<div style="display:flex; flex-direction:column; gap:6px;">'
-        for e in reversed(activity[-20:]):
-            ts     = e.get("timestamp", "")[:19][11:]   # HH:MM:SS
-            event  = e.get("event", "")
-            ticker = e.get("ticker") or (e.get("order") or {}).get("ticker", "—")
-            result = e.get("result", {}) or {}
-            order  = e.get("order",  {}) or {}
-
-            if event == "order_placed":
-                amt   = order.get("dollar_amount", 0)
-                conf  = order.get("confidence", 0)
-                label = f'<span class="badge badge-green">BUY</span>'
-                detail = f"${amt:,.0f} · conf {conf:.0%}"
-            elif event in ("hard_exit", "ai_close", "stop_loss_close", "take_profit_close"):
-                pnl    = result.get("realized_pnl")
-                pnl_s  = f"{'+'if pnl and pnl>=0 else ''}${pnl:,.2f}" if pnl is not None else ""
-                cls    = "pos" if pnl and pnl >= 0 else "neg"
-                label  = f'<span class="badge badge-red">CLOSE</span>'
-                detail = f'<span class="{cls}">{pnl_s}</span> · {event.replace("_"," ")}'
-            elif event == "daily_loss_halt":
-                label  = f'<span class="badge badge-red">HALT</span>'
-                detail = f"Circuit breaker triggered"
-            elif event in ("skipped_signal_gate", "skipped_momentum", "skipped_liquidity", "skipped_earnings"):
-                label  = f'<span class="badge badge-gray">SKIP</span>'
-                detail = event.replace("skipped_", "").replace("_", " ")
-            elif event == "balance_sync":
-                label  = f'<span class="badge badge-gray">SYNC</span>'
-                detail = f"${e.get('portfolio_value',0):,.2f}"
-                ticker = "—"
-            else:
-                label  = f'<span class="badge badge-gray">{event[:6].upper()}</span>'
-                detail = ""
-
-            feed_html += f"""
-            <div style="background:#1e222d; border:1px solid #2a2e39; border-radius:6px;
-                        padding:8px 10px; display:flex; justify-content:space-between; align-items:center;">
-                <div style="display:flex; align-items:center; gap:8px;">
-                    {label}
-                    <span style="font-size:13px; font-weight:600; color:#d1d4dc;">{ticker}</span>
-                </div>
-                <div style="text-align:right;">
-                    <div style="font-size:12px; color:#d1d4dc;">{detail}</div>
-                    <div style="font-size:10px; color:#787b86;">{ts}</div>
-                </div>
-            </div>"""
-        feed_html += "</div>"
-        st.markdown(feed_html, unsafe_allow_html=True)
+    pass  # right column reserved for future widgets
 
 
-# ── Trade history ─────────────────────────────────────────────────────────────
+# ── Activity & Trade History ──────────────────────────────────────────────────
 
 st.markdown("<br>", unsafe_allow_html=True)
 st.markdown(
     '<p style="font-size:11px; font-weight:600; letter-spacing:0.08em; '
-    'text-transform:uppercase; color:#787b86; margin-bottom:8px;">Trade History — Last 7 Days</p>',
+    'text-transform:uppercase; color:#787b86; margin-bottom:10px;">Activity — Last 7 Days</p>',
     unsafe_allow_html=True,
 )
 
-recent     = _load_events(days=7)
-trades     = [e for e in recent if e.get("event") == "order_placed"]
-closes     = [e for e in recent if e.get("event") in ("hard_exit", "ai_close", "stop_loss_close", "take_profit_close")]
-all_trades = sorted(trades + closes, key=lambda x: x.get("timestamp", ""), reverse=True)
+# Gather all relevant events from the last 7 days, sorted newest first
+recent_all = _load_events(days=7)
+history_events = [
+    e for e in recent_all
+    if e.get("event") in (
+        "order_placed", "hard_exit", "ai_close",
+        "stop_loss_close", "take_profit_close",
+        "daily_loss_halt", "skipped_signal_gate",
+        "skipped_momentum", "skipped_liquidity",
+        "skipped_earnings", "balance_sync",
+    )
+]
+history_events.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
 
-if not all_trades:
+if not history_events:
     st.markdown(
-        '<p style="color:#787b86; font-size:13px;">No trade history in the last 7 days.</p>',
+        '<p style="color:#787b86; font-size:13px; padding:4px 0;">No activity in the last 7 days.</p>',
         unsafe_allow_html=True,
     )
 else:
-    for e in all_trades[:30]:
-        ts     = e.get("timestamp", "")[:19].replace("T", " ")
+    for e in history_events[:50]:
         event  = e.get("event", "")
-        ticker = e.get("ticker") or (e.get("order") or {}).get("ticker", "—")
+        ts_raw = e.get("timestamp", "")[:19].replace("T", " ")
+        ticker = e.get("ticker") or (e.get("order") or {}).get("ticker", "")
         order  = e.get("order",  {}) or {}
         result = e.get("result", {}) or {}
         pnl    = result.get("realized_pnl")
-        is_buy = event == "order_placed"
 
-        badge_color = "#26a69a" if is_buy else "#ef5350"
-        badge_bg    = "rgba(38,166,154,0.15)" if is_buy else "rgba(239,83,80,0.15)"
-        badge_text  = "BUY" if is_buy else "CLOSE"
-        border_left = f"3px solid {badge_color}"
+        # ── Derive display values per event type ──────────────────────────────
+        if event == "order_placed":
+            badge_text  = "BUY"
+            badge_color = "#26a69a"
+            badge_bg    = "rgba(38,166,154,0.15)"
+            border_col  = "#26a69a"
+            amount_str  = f"${order.get('dollar_amount', 0):,.0f}"
+            conf_str    = f"Conf {order.get('confidence', 0):.0%}"
+            sector_str  = order.get("sector", "")
+            detail_line = "  ·  ".join(x for x in [amount_str, conf_str, sector_str] if x)
+            reason_str  = order.get("reasoning", "")[:100]
+            pnl_str     = ""
+            pnl_color   = "#787b86"
 
-        amount = f"${order.get('dollar_amount', 0):,.0f}" if is_buy else ""
-        conf   = f"Conf {order.get('confidence', 0):.0%}" if is_buy else ""
-        reason = (order.get("reasoning", "") if is_buy else e.get("reason", event.replace("_", " ")))[:80]
+        elif event in ("hard_exit", "ai_close", "stop_loss_close", "take_profit_close"):
+            badge_text  = "CLOSE"
+            badge_color = "#ef5350"
+            badge_bg    = "rgba(239,83,80,0.15)"
+            border_col  = "#ef5350"
+            reason_str  = e.get("reason", event.replace("_", " "))
+            pnl_color   = "#26a69a" if pnl and pnl >= 0 else "#ef5350"
+            pnl_str     = f'{"+" if pnl and pnl >= 0 else ""}${pnl:,.2f}' if pnl is not None else ""
+            detail_line = reason_str[:80]
+            reason_str  = ""
 
-        if pnl is not None:
-            pnl_color = "#26a69a" if pnl >= 0 else "#ef5350"
-            pnl_text  = f'{"+" if pnl >= 0 else ""}${pnl:,.2f}'
+        elif event == "daily_loss_halt":
+            badge_text  = "HALT"
+            badge_color = "#ef5350"
+            badge_bg    = "rgba(239,83,80,0.15)"
+            border_col  = "#ef5350"
+            ticker      = "Circuit Breaker"
+            detail_line = f"Daily loss limit hit — new trades paused"
+            reason_str  = ""
+            pnl_str     = ""
+            pnl_color   = "#787b86"
+
+        elif event in ("skipped_signal_gate", "skipped_momentum", "skipped_liquidity", "skipped_earnings"):
+            badge_text  = "SKIP"
+            badge_color = "#787b86"
+            badge_bg    = "rgba(120,123,134,0.15)"
+            border_col  = "#2a2e39"
+            detail_line = e.get("reason", event.replace("skipped_", "").replace("_", " "))[:80]
+            reason_str  = ""
+            pnl_str     = ""
+            pnl_color   = "#787b86"
+
+        elif event == "balance_sync":
+            badge_text  = "SYNC"
+            badge_color = "#787b86"
+            badge_bg    = "rgba(120,123,134,0.15)"
+            border_col  = "#2a2e39"
+            ticker      = "Balance Sync"
+            detail_line = f"Portfolio updated to ${e.get('portfolio_value', 0):,.2f}"
+            reason_str  = ""
+            pnl_str     = ""
+            pnl_color   = "#787b86"
+
         else:
-            pnl_color = "#787b86"
-            pnl_text  = ""
+            continue
 
-        meta_parts = [p for p in [amount, conf, pnl_text and f'P&L {pnl_text}'] if p]
-        meta_str   = " &nbsp;·&nbsp; ".join(
-            f'<span style="color:{pnl_color if p.startswith("P&L") else "#d1d4dc"};">{p}</span>'
-            for p in meta_parts
+        # ── Render row ────────────────────────────────────────────────────────
+        pnl_html = (
+            f'<span style="font-size:13px; font-weight:700; color:{pnl_color}; margin-left:8px;">{pnl_str}</span>'
+            if pnl_str else ""
+        )
+        reason_html = (
+            f'<div style="font-size:11px; color:#4b5060; margin-top:3px; padding-left:2px;">{reason_str}</div>'
+            if reason_str else ""
         )
 
         st.markdown(f"""
-<div style="background:#1e222d; border:1px solid #2a2e39; border-left:{border_left};
-            border-radius:6px; padding:10px 14px; margin-bottom:6px;">
+<div style="background:#1e222d; border:1px solid #2a2e39; border-left:3px solid {border_col};
+            border-radius:6px; padding:10px 14px; margin-bottom:5px;">
     <div style="display:flex; justify-content:space-between; align-items:center;">
-        <div style="display:flex; align-items:center; gap:10px;">
-            <span style="background:{badge_bg}; color:{badge_color}; font-size:11px;
-                         font-weight:700; padding:2px 8px; border-radius:4px;">{badge_text}</span>
-            <span style="font-size:15px; font-weight:700; color:#d1d4dc;">{ticker}</span>
-            <span style="font-size:12px; color:#787b86;">{meta_str}</span>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <span style="background:{badge_bg}; color:{badge_color}; font-size:10px; font-weight:700;
+                         padding:2px 8px; border-radius:4px; letter-spacing:0.05em;">{badge_text}</span>
+            <span style="font-size:14px; font-weight:700; color:#d1d4dc;">{ticker}</span>
+            {pnl_html}
+            <span style="font-size:12px; color:#787b86;">{detail_line}</span>
         </div>
-        <span style="font-size:11px; color:#787b86;">{ts[5:]}</span>
+        <span style="font-size:11px; color:#4b5060; white-space:nowrap; margin-left:12px;">{ts_raw[5:]}</span>
     </div>
-    <div style="font-size:11px; color:#787b86; margin-top:4px;">{reason}</div>
+    {reason_html}
 </div>""", unsafe_allow_html=True)
 
 

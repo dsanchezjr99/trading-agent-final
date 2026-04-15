@@ -466,6 +466,32 @@ def sync_balance_to_env() -> None:
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
+# Market hours in UTC (ET + 4h)
+MARKET_OPEN_UTC = "13:30"   # 9:30 AM ET
+MARKET_CLOSE_UTC = "20:15"  # 4:15 PM ET
+
+_morning_sent_date: str = ""
+_eod_sent_date:     str = ""
+
+
+def _maybe_send_morning() -> None:
+    """Send morning email once per day, at or after market open."""
+    global _morning_sent_date
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _morning_sent_date != today:
+        _morning_sent_date = today
+        send_morning_email()
+
+
+def _maybe_send_eod() -> None:
+    """Send EOD email once per day, at or after market close."""
+    global _eod_sent_date
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _eod_sent_date != today:
+        _eod_sent_date = today
+        send_eod_email()
+
+
 def run() -> None:
     print(f"[agent] Starting trading agent (poll every {POLL_INTERVAL} min, DRY_RUN={os.getenv('DRY_RUN')})")
     print("[agent] Press Ctrl+C to stop.\n")
@@ -475,8 +501,9 @@ def run() -> None:
 
     schedule.every(POLL_INTERVAL).minutes.do(scan_new_disclosures)
     schedule.every(15).minutes.do(review_open_positions)
-    schedule.every().day.at("09:30").do(send_morning_email)
-    schedule.every().day.at("16:15").do(send_eod_email)
+    # Use UTC times so emails fire correctly regardless of system timezone
+    schedule.every().day.at(MARKET_OPEN_UTC).do(_maybe_send_morning)
+    schedule.every().day.at(MARKET_CLOSE_UTC).do(_maybe_send_eod)
 
     while True:
         schedule.run_pending()

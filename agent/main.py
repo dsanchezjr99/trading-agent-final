@@ -17,9 +17,13 @@ import sys
 import schedule
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 import anthropic
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -342,6 +346,10 @@ def scan_new_disclosures() -> None:
 def review_open_positions() -> None:
     print(f"\n[agent] === Portfolio review at {datetime.now(timezone.utc).isoformat()} ===")
 
+    if not _is_trading_hours():
+        print("[agent] Market is closed — skipping portfolio review.")
+        return
+
     try:
         positions = get_open_positions()
     except Exception as e:
@@ -470,6 +478,32 @@ def sync_balance_to_env() -> None:
 MARKET_OPEN_UTC = "13:30"   # 9:30 AM ET
 MARKET_CLOSE_UTC = "20:15"  # 4:15 PM ET
 
+ET = ZoneInfo("America/New_York")
+
+
+def _is_trading_hours() -> bool:
+    """True if we're within NYSE core hours (Mon–Fri 9:30–16:00 ET). Doesn't check holidays."""
+    now_et = datetime.now(ET)
+    if now_et.weekday() >= 5:            # Saturday / Sunday
+        return False
+    open_et  = now_et.replace(hour=9,  minute=30, second=0, microsecond=0)
+    close_et = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
+    return open_et <= now_et <= close_et
+
+
+def _next_market_open_utc() -> datetime:
+    """Return the next NYSE open (9:25 AM ET, 5 min early) as a UTC datetime."""
+    now_et = datetime.now(ET)
+    # Walk forward day by day until we find a weekday open that's in the future
+    for days_ahead in range(8):
+        candidate = (now_et + timedelta(days=days_ahead)).replace(
+            hour=9, minute=25, second=0, microsecond=0
+        )
+        if candidate > now_et and candidate.weekday() < 5:
+            return candidate.astimezone(timezone.utc)
+    # Fallback (should never happen)
+    return (now_et + timedelta(days=1)).replace(hour=13, minute=25).astimezone(timezone.utc)
+
 _morning_sent_date: str = ""
 _eod_sent_date:     str = ""
 
@@ -507,7 +541,21 @@ def run() -> None:
 
     while True:
         schedule.run_pending()
-        time.sleep(30)
+
+        if _is_trading_hours():
+            time.sleep(30)
+        else:
+            # Sleep until the next scheduled job (e.g. EOD email) OR next market open,
+            # whichever comes first — avoids spinning all night / over weekends.
+            next_open  = _next_market_open_utc()
+            now_utc    = datetime.now(timezone.utc)
+            secs_to_open = (next_open - now_utc).total_seconds()
+            idle         = schedule.idle_seconds()         # secs until next scheduled job
+            sleep_secs   = min(secs_to_open, idle) if (idle and idle > 0) else secs_to_open
+            sleep_secs   = max(30, sleep_secs)
+            wake_at      = (now_utc + timedelta(seconds=sleep_secs)).strftime("%Y-%m-%d %H:%M UTC")
+            print(f"[agent] Market closed — sleeping {sleep_secs/3600:.1f}h (wake at {wake_at})")
+            time.sleep(sleep_secs)
 
 
 if __name__ == "__main__":

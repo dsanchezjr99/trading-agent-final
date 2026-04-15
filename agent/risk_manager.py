@@ -16,7 +16,7 @@ MAX_SECTOR_POSITIONS = int(os.getenv("MAX_SECTOR_POSITIONS", 2))
 STOP_LOSS_PCT      = float(os.getenv("STOP_LOSS_PCT",      0.05))
 TAKE_PROFIT_PCT    = float(os.getenv("TAKE_PROFIT_PCT",    0.20))
 MIN_CONFIDENCE     = float(os.getenv("MIN_CONFIDENCE",     0.70))
-HARD_CAP_DOLLARS   = 25000.0
+HARD_CAP_DOLLARS   = 12500.0
 
 
 def evaluate(

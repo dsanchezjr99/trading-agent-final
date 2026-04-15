@@ -103,6 +103,75 @@ def vol_size_scalar(ticker_vol: float) -> float:
     return max(0.25, min(1.0, scalar))
 
 
+# ── Momentum Gate ────────────────────────────────────────────────────────────
+
+def is_above_20d_ma(ticker: str) -> bool:
+    """
+    Option C — Momentum gate.
+    Returns True if the ticker's current price is above its 20-day moving average.
+    Prevents buying into a downtrend regardless of how strong the political signal is.
+    """
+    closes = _get_daily_closes(ticker, 30)
+    if len(closes) < 5:
+        print(f"[market] {ticker} momentum check — insufficient data, allowing through")
+        return True
+    ma20    = sum(closes[-20:]) / min(20, len(closes))
+    current = closes[-1]
+    above   = current > ma20
+    print(f"[market] {ticker} momentum: ${current:.2f} vs 20-day MA ${ma20:.2f} → {'ABOVE' if above else 'BELOW'}")
+    return above
+
+
+# ── Liquidity Filter ─────────────────────────────────────────────────────────
+
+MIN_ADV_DOLLARS = float(os.getenv("MIN_ADV_DOLLARS", 5_000_000))   # $5M average daily dollar volume
+
+
+def get_avg_daily_volume_dollars(ticker: str, days: int = 20) -> float:
+    """
+    Returns the 20-day average daily dollar volume (shares × close price) for a ticker.
+    Used to filter out illiquid names before placing a $12,500 order.
+    """
+    closes = _get_daily_closes(ticker, days + 15)
+    end   = datetime.now(timezone.utc)
+    start = end - timedelta(days=days + 15)
+    try:
+        resp = requests.get(
+            f"{ALPACA_DATA}/v2/stocks/{ticker}/bars",
+            headers=_headers(),
+            params={
+                "timeframe": "1Day",
+                "start":     start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "end":       end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "limit":     days + 15,
+                "feed":      "iex",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        bars = resp.json().get("bars", [])[-days:]
+        if not bars:
+            return 0.0
+        dollar_vols = [b["c"] * b["v"] for b in bars if b.get("v", 0) > 0]
+        return sum(dollar_vols) / len(dollar_vols) if dollar_vols else 0.0
+    except Exception as e:
+        print(f"[market] ADV fetch failed for {ticker}: {e}")
+        return 0.0
+
+
+def is_liquid_enough(ticker: str) -> bool:
+    """
+    Returns True if the ticker has sufficient average daily dollar volume.
+    Prevents placing orders that would represent a significant % of daily volume.
+    """
+    adv = get_avg_daily_volume_dollars(ticker)
+    if adv < MIN_ADV_DOLLARS:
+        print(f"[market] {ticker} ADV ${adv:,.0f} below minimum ${MIN_ADV_DOLLARS:,.0f} — skipping.")
+        return False
+    print(f"[market] {ticker} ADV ${adv:,.0f} — liquidity OK")
+    return True
+
+
 # ── Earnings Calendar ─────────────────────────────────────────────────────────
 
 def get_next_earnings_date(ticker: str) -> date | None:

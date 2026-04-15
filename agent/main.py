@@ -25,10 +25,18 @@ import anthropic
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
-from data.political import get_all_political_trades, summarise_trades
+from data.political import get_all_political_trades, summarise_trades, passes_signal_gate
+from utils.notify   import (
+    notify_order_placed,
+    notify_position_closed,
+    notify_market_open,
+    notify_end_of_day,
+    notify_daily_loss_halt,
+    notify_bear_market,
+)
 from data.news      import get_news_for_ticker, summarise_news, aggregate_sentiment_score
 from data.sec       import get_sec_filings, summarise_sec_filings
-from data.market    import get_market_regime, get_volatility, earnings_too_close
+from data.market    import get_market_regime, get_volatility, earnings_too_close, is_liquid_enough, is_above_20d_ma
 from agent.prompts      import SYSTEM_PROMPT, build_analysis_prompt, build_portfolio_review_prompt
 from agent.risk_manager import evaluate, check_exit_conditions
 from agent.broker       import (
@@ -189,6 +197,7 @@ def scan_new_disclosures() -> None:
     if regime == "BEAR":
         min_confidence = min(min_confidence + 0.10, 0.95)
         print(f"[market] BEAR market — raising confidence threshold to {min_confidence:.0%}")
+        notify_bear_market(spy_price=0, ma50=0)
 
     # ── Alpaca account + positions (fetched once, reused all cycle) ───────────
     try:
@@ -202,6 +211,10 @@ def scan_new_disclosures() -> None:
     open_tickers    = [p["symbol"] for p in positions]
 
     if not _within_daily_loss_limit(portfolio_value):
+        notify_daily_loss_halt(
+            drawdown=(_daily_start_value - portfolio_value) / _daily_start_value,  # type: ignore[operator]
+            limit=float(os.getenv("MAX_DAILY_LOSS_PCT", 0.03)),
+        )
         return
 
     # ── Load position metadata (sectors of existing positions) ────────────────
@@ -237,6 +250,25 @@ def scan_new_disclosures() -> None:
         # ── Earnings calendar check ───────────────────────────────────────────
         if earnings_too_close(ticker):
             log_event({"event": "skipped_earnings", "ticker": ticker})
+            continue
+
+        # ── Liquidity filter ──────────────────────────────────────────────────
+        if not is_liquid_enough(ticker):
+            log_event({"event": "skipped_liquidity", "ticker": ticker})
+            continue
+
+        # ── Option B: Rules-based signal gate ─────────────────────────────────
+        passed, gate_reason = passes_signal_gate(ticker_trades)
+        if not passed:
+            print(f"[gate] {ticker}: {gate_reason}")
+            log_event({"event": "skipped_signal_gate", "ticker": ticker, "reason": gate_reason})
+            continue
+
+        # ── Option C: Momentum gate (price above 20-day MA) ───────────────────
+        if not is_above_20d_ma(ticker):
+            reason = f"{ticker} is below 20-day MA — skipping downtrend entry"
+            print(f"[gate] {reason}")
+            log_event({"event": "skipped_momentum", "ticker": ticker, "reason": reason})
             continue
 
         # ── Fetch news, SEC filings, and volatility in parallel ───────────────
@@ -294,6 +326,7 @@ def scan_new_disclosures() -> None:
                 }
                 _save_meta(meta)
                 log_event({"event": "order_placed", "order": order, "result": result})
+                notify_order_placed(order, result)
 
 
 # ── Periodic portfolio review ─────────────────────────────────────────────────
@@ -321,6 +354,7 @@ def review_open_positions() -> None:
         if result:
             meta.pop(ticker, None)
             _save_meta(meta)
+            notify_position_closed(ticker, reason, result)
         log_event({"event": "hard_exit", "ticker": ticker, "reason": reason, "result": result})
 
     remaining = [p for p in positions if p["symbol"] not in exits]
@@ -363,10 +397,42 @@ def review_open_positions() -> None:
             if result:
                 meta.pop(ticker, None)
                 _save_meta(meta)
+                notify_position_closed(ticker, decision.get("reasoning", "AI recommended close"), result)
             log_event({"event": "ai_close", "ticker": ticker, "decision": decision, "result": result})
 
 
 # ── End-of-day balance sync ────────────────────────────────────────────────────
+
+def send_morning_email() -> None:
+    """Send portfolio snapshot at market open (9:30 AM ET)."""
+    try:
+        account   = get_account()
+        positions = get_open_positions()
+        notify_market_open(account, positions)
+    except Exception as e:
+        print(f"[email] Morning email failed: {e}")
+
+
+def send_eod_email() -> None:
+    """Send end-of-day summary at 4:15 PM ET."""
+    try:
+        account   = get_account()
+        positions = get_open_positions()
+        # Pull today's events from the log file
+        events = []
+        log_path = _log_file()
+        if log_path.exists():
+            with open(log_path) as f:
+                for line in f:
+                    try:
+                        events.append(json.loads(line))
+                    except Exception:
+                        pass
+        notify_end_of_day(account, positions, events)
+        sync_balance_to_env()
+    except Exception as e:
+        print(f"[email] EOD email failed: {e}")
+
 
 def sync_balance_to_env() -> None:
     """Write live Alpaca portfolio value back to PORTFOLIO_VALUE in .env after market close."""
@@ -400,8 +466,9 @@ def run() -> None:
     review_open_positions()
 
     schedule.every(POLL_INTERVAL).minutes.do(scan_new_disclosures)
-    schedule.every(60).minutes.do(review_open_positions)
-    schedule.every().day.at("16:15").do(sync_balance_to_env)
+    schedule.every(30).minutes.do(review_open_positions)
+    schedule.every().day.at("09:30").do(send_morning_email)
+    schedule.every().day.at("16:15").do(send_eod_email)
 
     while True:
         schedule.run_pending()

@@ -227,15 +227,68 @@ def get_all_political_trades(days_back: int = 7) -> list[dict]:
 
 # ── Summary helper used by Claude prompt ────────────────────────────────────
 
+def passes_signal_gate(trades: list[dict]) -> tuple[bool, str]:
+    """
+    Option B — Rules-based signal gate.
+    Requires ALL of the following before passing to Claude:
+      1. At least 2 unique buyers
+      2. Buyers outnumber sellers (net bullish)
+      3. Aggregate disclosed minimum amount >= $50,000
+
+    Returns (passed, reason).
+    """
+    buyers  = [t for t in trades if "purchase" in t.get("transaction_type", "").lower()]
+    sellers = [t for t in trades if "sale" in t.get("transaction_type", "").lower()
+               and "purchase" not in t.get("transaction_type", "").lower()]
+
+    unique_buyers = len({t["member"] for t in buyers})
+
+    aggregate_min = sum(_parse_min_amount(t.get("amount_range", "")) for t in buyers)
+
+    if unique_buyers < 2:
+        return False, f"Signal gate: only {unique_buyers} unique buyer(s) — need ≥2"
+
+    if len(sellers) >= len(buyers):
+        return False, f"Signal gate: {len(sellers)} seller(s) vs {len(buyers)} buyer(s) — not net bullish"
+
+    if aggregate_min < 50_000:
+        return False, f"Signal gate: aggregate buy amount ${aggregate_min:,} below $50,000 threshold"
+
+    return True, f"Signal gate passed: {unique_buyers} buyers, ${aggregate_min:,} aggregate, {len(sellers)} sellers"
+
+
+def _signal_strength(transaction_date: str, max_days: int = 30) -> str:
+    """
+    Returns a signal strength label based on how old the transaction is.
+    Newer disclosures carry more alpha — older ones are likely priced in.
+      0–7 days:   STRONG
+      8–14 days:  MODERATE
+      15–30 days: WEAK
+    """
+    parsed = _parse_date(transaction_date)
+    if not parsed:
+        return "UNKNOWN"
+    days_old = (datetime.now(timezone.utc).replace(tzinfo=None) - parsed).days
+    if days_old <= 7:
+        return "STRONG"
+    if days_old <= 14:
+        return "MODERATE"
+    return "WEAK"
+
+
 def summarise_trades(trades: list[dict]) -> str:
-    """Format trade list into a readable string for the AI prompt."""
+    """
+    Format trade list into a readable string for the AI prompt.
+    Includes signal strength decay label so Claude weights recent trades higher.
+    """
     if not trades:
         return "No recent congressional disclosures found."
     lines = []
     for t in trades:
         direction = "BOUGHT" if "purchase" in t["transaction_type"] else "SOLD"
+        strength  = _signal_strength(t["transaction_date"])
         lines.append(
-            f"- {t['member']} ({t['source'].upper()}) {direction} {t['ticker']} "
+            f"- [{strength}] {t['member']} ({t['source'].upper()}) {direction} {t['ticker']} "
             f"({t['amount_range']}) on {t['transaction_date']} "
             f"[disclosed {t['disclosure_date']}]"
         )

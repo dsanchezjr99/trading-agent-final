@@ -46,18 +46,18 @@ html, body,
 .main { background-color: #0f0f0f !important; color: #fff !important; }
 
 section[data-testid="stMainBlockContainer"] {
-    padding: 0 2rem !important;
-    max-width: 1100px;
+    padding: 0 3rem !important;
+    max-width: 960px;
     margin: 0 auto;
 }
-.block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
+.block-container { padding-top: 2rem !important; padding-bottom: 3rem !important; }
 
-/* Remove gaps */
+/* Controlled gaps — tight but not zero */
 [data-testid="stVerticalBlock"]   { gap: 0 !important; }
 [data-testid="stHorizontalBlock"] { gap: 0 !important; align-items: center !important; }
 [data-testid="column"]            { padding: 0 !important; }
 .stMarkdown                       { margin: 0 !important; }
-.stMarkdown p                     { margin: 0 !important; line-height: 1.5 !important; }
+.stMarkdown p                     { margin: 0 !important; line-height: 1.6 !important; }
 
 /* Hide Streamlit chrome */
 [data-testid="stHeader"]      { display: none !important; }
@@ -302,16 +302,16 @@ if env_start > 0:
 # ── Portfolio hero ────────────────────────────────────────────────────────────
 
 st.markdown(f"""
-<div style="padding: 24px 0 8px;">
-    <div style="font-size: 13px; color: #888; margin-bottom: 6px; font-weight: 500;">
+<div style="padding: 40px 0 16px;">
+    <div style="font-size: 13px; color: #888; margin-bottom: 10px; font-weight: 500; letter-spacing: 0.02em;">
         Investing
     </div>
-    <div style="font-size: 48px; font-weight: 700; color: #fff; letter-spacing: -1.5px; line-height: 1;">
+    <div style="font-size: 52px; font-weight: 700; color: #fff; letter-spacing: -2px; line-height: 1;">
         ${portfolio_val:,.2f}
     </div>
-    <div style="font-size: 15px; font-weight: 500; color: {pnl_color}; margin-top: 8px;">
+    <div style="font-size: 16px; font-weight: 500; color: {pnl_color}; margin-top: 12px;">
         {pnl_sign}${total_pnl:,.2f} ({pnl_sign}{pnl_pct:.2f}%) &nbsp;
-        <span style="color: #888; font-weight: 400; font-size: 13px;">Today</span>
+        <span style="color: #555; font-weight: 400; font-size: 14px;">Today</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -352,12 +352,12 @@ st.plotly_chart(
 
 # Progress toward $1M
 st.markdown(f"""
-<div style="margin: 8px 0 4px; display:flex; justify-content:space-between; align-items:center;">
+<div style="margin: 20px 0 8px; display:flex; justify-content:space-between; align-items:center;">
     <span style="font-size:12px; color:#555;">$0</span>
     <span style="font-size:12px; color:#888; font-weight:500;">Goal: $1,000,000</span>
     <span style="font-size:12px; color:{RH_GREEN}; font-weight:600;">{progress_pct:.2f}%</span>
 </div>
-<div style="background:#1a1a1a; border-radius:2px; height:3px; margin-bottom:28px;">
+<div style="background:#1a1a1a; border-radius:2px; height:3px; margin-bottom:40px;">
     <div style="background:{RH_GREEN}; width:{progress_pct:.2f}%; height:100%; border-radius:2px;"></div>
 </div>
 """, unsafe_allow_html=True)
@@ -371,9 +371,9 @@ dry          = os.getenv("DRY_RUN", "true").lower() == "true"
 mode_label   = "Paper trading" if dry else "Live trading"
 
 st.markdown(f"""
-<div style="display:flex; gap:32px; padding: 0 0 20px; border-bottom:1px solid #1e1e1e; flex-wrap:wrap;">
+<div style="display:flex; gap:40px; padding: 0 0 32px; border-bottom:1px solid #1e1e1e; flex-wrap:wrap;">
     <div>
-        <div style="font-size:11px; color:#888; margin-bottom:3px;">Buying Power</div>
+        <div style="font-size:11px; color:#888; margin-bottom:5px;">Buying Power</div>
         <div style="font-size:16px; font-weight:600; color:#fff;">${cash:,.2f}</div>
     </div>
     <div>
@@ -401,9 +401,9 @@ st.markdown(f"""
 # ── Positions ─────────────────────────────────────────────────────────────────
 
 st.markdown("""
-<div style="font-size:13px; font-weight:600; color:#888;
-            letter-spacing:0.05em; text-transform:uppercase;
-            padding: 20px 0 12px;">Stocks</div>
+<div style="font-size:12px; font-weight:600; color:#555;
+            letter-spacing:0.08em; text-transform:uppercase;
+            padding: 36px 0 16px;">Stocks</div>
 """, unsafe_allow_html=True)
 
 if not fetch_ok:
@@ -429,7 +429,7 @@ else:
         col_left, col_right = st.columns([3, 1])
         with col_left:
             st.markdown(f"""
-<div style="padding: 14px 0;">
+<div style="padding: 20px 0;">
     <div style="display:flex; align-items:baseline; gap:10px;">
         <span style="font-size:16px; font-weight:700; color:#fff;">{ticker}</span>
         <span style="font-size:12px; color:#555;">{qty:g} shares · {sector}</span>
@@ -456,9 +456,9 @@ else:
 # ── Activity list ─────────────────────────────────────────────────────────────
 
 st.markdown("""
-<div style="font-size:13px; font-weight:600; color:#888;
-            letter-spacing:0.05em; text-transform:uppercase;
-            padding: 28px 0 12px;">Activity</div>
+<div style="font-size:12px; font-weight:600; color:#555;
+            letter-spacing:0.08em; text-transform:uppercase;
+            padding: 40px 0 16px;">Activity</div>
 """, unsafe_allow_html=True)
 
 activity_events = [
@@ -501,7 +501,7 @@ else:
         col_l, col_r = st.columns([3, 1])
         with col_l:
             st.markdown(f"""
-<div style="padding:13px 0;">
+<div style="padding:18px 0;">
     <div style="font-size:15px; font-weight:600; color:#fff;">{label} {ticker}</div>
     <div style="font-size:12px; color:#555; margin-top:2px;">{sublabel}</div>
 </div>""", unsafe_allow_html=True)
@@ -534,7 +534,7 @@ with st.expander("Recent AI Signals"):
             col_l, col_r = st.columns([3, 1])
             with col_l:
                 st.markdown(f"""
-<div style="padding:10px 0;">
+<div style="padding:16px 0;">
     <div style="font-size:14px; font-weight:600; color:#fff;">
         {ticker} &nbsp;<span style="color:{color}; font-size:12px;">{action}</span>
     </div>

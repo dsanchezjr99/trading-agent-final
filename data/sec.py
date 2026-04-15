@@ -7,7 +7,7 @@ Requires SEC_API_KEY in .env — free tier: 100 requests/month.
 
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 from utils import fetch_with_retry
@@ -35,8 +35,8 @@ def get_sec_filings(ticker: str, days_back: int = 14, forms: str = "8-K,10-Q,4")
         print("[sec] SEC API key not set — skipping.")
         return []
 
-    start_dt = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    end_dt   = datetime.utcnow().strftime("%Y-%m-%d")
+    start_dt = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    end_dt   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     payload = {
         "query": {

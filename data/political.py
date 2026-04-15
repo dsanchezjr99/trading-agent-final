@@ -8,7 +8,7 @@ Fetches congressional stock disclosures from:
 
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 from utils import fetch_with_retry
@@ -21,9 +21,41 @@ QUIVER_BASE    = "https://api.quiverquant.com/beta"
 HOUSE_URL  = "https://house-stock-watcher-data.s3-us-east-2.amazonaws.com/data/all_transactions.json"
 SENATE_URL = "https://senate-stock-watcher-data.s3-us-east-2.amazonaws.com/aggregate/all_transactions.json"
 
+# Only evaluate trades where the stated minimum dollar amount is at or above this threshold.
+# Removes the $1k–$15k small trades that are portfolio noise, not conviction signals.
+MIN_TRADE_AMOUNT = int(os.getenv("MIN_TRADE_AMOUNT", 15000))
+
+# Only consider trades whose TRANSACTION date (not disclosure date) is within this window.
+# Avoids acting on signals that are already 6 weeks old and fully priced in.
+MAX_TRANSACTION_AGE_DAYS = int(os.getenv("MAX_TRANSACTION_AGE_DAYS", 30))
+
 
 def _days_ago(n: int) -> datetime:
-    return datetime.utcnow() - timedelta(days=n)
+    return datetime.now(timezone.utc) - timedelta(days=n)
+
+
+def _parse_min_amount(amount_str: str) -> int:
+    """
+    Extracts the lower bound dollar value from Alpaca amount range strings.
+    Examples:
+      '$1,001 - $15,000'  → 1001
+      '$50,001 - $100,000' → 50001
+      'Over $1,000,000'   → 1000000
+      ''                  → 0
+    """
+    if not amount_str:
+        return 0
+    clean = amount_str.replace(",", "").replace("$", "").strip()
+    if clean.lower().startswith("over"):
+        try:
+            return int(clean.lower().replace("over", "").strip())
+        except ValueError:
+            return 0
+    parts = clean.split("-")
+    try:
+        return int(parts[0].strip())
+    except ValueError:
+        return 0
 
 
 def _parse_date(date_str: str) -> datetime | None:
@@ -156,19 +188,40 @@ def get_quiver_trades(days_back: int = 7) -> list[dict]:
 # ── Combined entry point ─────────────────────────────────────────────────────
 
 def get_all_political_trades(days_back: int = 7) -> list[dict]:
-    """Merge trades from all sources, deduplicate, and sort newest first."""
+    """
+    Merge trades from all sources, deduplicate, and apply quality filters:
+      1. Transaction date must be within MAX_TRANSACTION_AGE_DAYS (avoids stale signals)
+      2. Trade amount lower bound must be >= MIN_TRADE_AMOUNT (removes noise trades)
+    """
     trades = get_house_trades(days_back) + get_senate_trades(days_back) + get_quiver_trades(days_back)
 
-    seen   = set()
-    unique = []
+    transaction_cutoff = _days_ago(MAX_TRANSACTION_AGE_DAYS)
+
+    seen    = set()
+    unique  = []
+    removed = 0
     for t in trades:
         key = (t["member"], t["ticker"], t["transaction_date"])
-        if key not in seen:
-            seen.add(key)
-            unique.append(t)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        # Filter 1: transaction must be recent enough to be actionable
+        tx_date = _parse_date(t["transaction_date"])
+        # _parse_date returns naive datetimes; strip tzinfo from cutoff for comparison
+        if tx_date and tx_date < transaction_cutoff.replace(tzinfo=None):
+            removed += 1
+            continue
+
+        # Filter 2: minimum trade size — skip $1k–$15k noise
+        if _parse_min_amount(t["amount_range"]) < MIN_TRADE_AMOUNT:
+            removed += 1
+            continue
+
+        unique.append(t)
 
     unique.sort(key=lambda x: x["disclosure_date"], reverse=True)
-    print(f"[political] Found {len(unique)} unique trades (last {days_back} days)")
+    print(f"[political] Found {len(unique)} qualifying trades (filtered {removed} below threshold)")
     return unique
 
 

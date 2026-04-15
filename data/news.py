@@ -1,6 +1,7 @@
 """
 news.py
 Fetches news headlines and sentiment scores for a given ticker from:
+  - Alpaca News Feed (free with any Alpaca account, no rate limit)
   - Polygon.io (financial news headlines)
   - Alpha Vantage (financial news + sentiment scores)
 """
@@ -14,11 +15,14 @@ from utils import fetch_with_retry, RateLimiter
 
 load_dotenv()
 
+ALPACA_KEY        = os.getenv("ALPACA_API_KEY")
+ALPACA_SECRET     = os.getenv("ALPACA_SECRET_KEY")
 POLYGON_KEY       = os.getenv("POLYGON_API_KEY")
 ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
 
-POLYGON_BASE = "https://api.polygon.io"
-AV_BASE      = "https://www.alphavantage.co/query"
+ALPACA_NEWS_BASE = "https://data.alpaca.markets/v1beta1/news"
+POLYGON_BASE     = "https://api.polygon.io"
+AV_BASE          = "https://www.alphavantage.co/query"
 
 # Alpha Vantage free tier: 25 requests/day, ~5/min — enforce 12-second spacing
 _av_limiter = RateLimiter(calls_per_minute=5)
@@ -28,6 +32,54 @@ def _fetch_json(url: str, **kwargs) -> dict:
     resp = requests.get(url, **kwargs)
     resp.raise_for_status()
     return resp.json()
+
+
+# ── Alpaca News Feed ──────────────────────────────────────────────────────────
+
+def get_alpaca_news(ticker: str, limit: int = 10) -> list[dict]:
+    """
+    Fetch recent news articles for a ticker from Alpaca's News Feed.
+    Uses the same ALPACA_API_KEY + ALPACA_SECRET_KEY already in .env — no extra account needed.
+    No rate limit. Returns real-time headlines tied directly to the ticker.
+    """
+    if not ALPACA_KEY or ALPACA_KEY == "your_alpaca_api_key_here":
+        print("[news] Alpaca API key not set — skipping Alpaca news.")
+        return []
+
+    headers = {
+        "APCA-API-KEY-ID":     ALPACA_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET,
+    }
+
+    try:
+        data = fetch_with_retry(lambda: _fetch_json(
+            ALPACA_NEWS_BASE,
+            headers=headers,
+            params={
+                "symbols": ticker,
+                "limit":   limit,
+                "sort":    "desc",
+                "include_content": "false",
+            },
+            timeout=15,
+        ))
+    except Exception as e:
+        print(f"[news] Alpaca news error for {ticker}: {e}")
+        return []
+
+    return [
+        {
+            "source":       "alpaca",
+            "ticker":       ticker,
+            "title":        item.get("headline", ""),
+            "description":  item.get("summary", ""),
+            "url":          item.get("url", ""),
+            "published_at": item.get("created_at", ""),
+            "sentiment":    None,
+        }
+        for item in data.get("news", [])
+        if item.get("headline")
+    ]
 
 
 # ── Polygon.io ────────────────────────────────────────────────────────────────
@@ -128,10 +180,11 @@ def get_alphavantage_sentiment(ticker: str) -> list[dict]:
 
 # ── Combined entry point ──────────────────────────────────────────────────────
 
-def get_news_for_ticker(ticker: str, hours_back: int = 48) -> list[dict]:
+def get_news_for_ticker(ticker: str) -> list[dict]:
     """Merge and sort news from all sources for a given ticker."""
     articles = (
-        get_polygon_news(ticker)
+        get_alpaca_news(ticker)
+        + get_polygon_news(ticker)
         + get_alphavantage_sentiment(ticker)
     )
     articles.sort(key=lambda x: x.get("published_at", ""), reverse=True)

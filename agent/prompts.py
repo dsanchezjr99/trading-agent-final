@@ -30,7 +30,8 @@ You MUST respond with ONLY a valid JSON object — no extra text, no markdown fe
   "reasoning": "<1–3 sentence explanation>",
   "risk_level": "LOW" | "MEDIUM" | "HIGH",
   "signal_source": "political" | "news" | "both",
-  "suggested_hold_days": <integer>
+  "suggested_hold_days": <integer>,
+  "sector": "<GICS sector name, e.g. Technology, Energy, Health Care, Financials, etc.>"
 }
 """
 

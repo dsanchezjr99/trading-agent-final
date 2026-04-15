@@ -43,7 +43,19 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
 }
 [data-testid="stHeader"] { background-color: #131722 !important; }
 [data-testid="stSidebar"] { background-color: #1e222d !important; }
-section[data-testid="stMainBlockContainer"] { padding-top: 1rem !important; }
+section[data-testid="stMainBlockContainer"] { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
+
+/* Kill Streamlit's default vertical gap between elements */
+.block-container { padding-top: 0.5rem !important; gap: 0 !important; }
+[data-testid="stVerticalBlock"] { gap: 0.25rem !important; }
+[data-testid="stHorizontalBlock"] { gap: 0.4rem !important; }
+
+/* Tighten column padding */
+[data-testid="column"] { padding: 0 4px !important; }
+
+/* Remove extra space Streamlit adds around markdown */
+.stMarkdown { margin-bottom: 0 !important; }
+.stMarkdown p { margin: 0 !important; line-height: 1.4 !important; }
 
 /* ── Typography ── */
 h1, h2, h3, h4, label, p, span, div {
@@ -539,10 +551,9 @@ with right:
 
 # ── Activity & Trade History ──────────────────────────────────────────────────
 
-st.markdown("<br>", unsafe_allow_html=True)
 st.markdown(
     '<p style="font-size:11px; font-weight:600; letter-spacing:0.08em; '
-    'text-transform:uppercase; color:#787b86; margin-bottom:10px;">Activity — Last 7 Days</p>',
+    'text-transform:uppercase; color:#787b86; margin:10px 0 6px;">Activity — Last 7 Days</p>',
     unsafe_allow_html=True,
 )
 
@@ -634,31 +645,41 @@ else:
         else:
             continue
 
-        # ── Render row ────────────────────────────────────────────────────────
-        pnl_html = (
-            f'<span style="font-size:13px; font-weight:700; color:{pnl_color}; margin-left:8px;">{pnl_str}</span>'
-            if pnl_str else ""
-        )
-        reason_html = (
-            f'<div style="font-size:11px; color:#4b5060; margin-top:3px; padding-left:2px;">{reason_str}</div>'
-            if reason_str else ""
-        )
+        # ── Render row using native columns (no nested HTML) ──────────────────
+        c_badge, c_ticker, c_detail, c_pnl, c_time = st.columns([1, 1.2, 4, 1.5, 1.5])
 
-        st.markdown(f"""
-<div style="background:#1e222d; border:1px solid #2a2e39; border-left:3px solid {border_col};
-            border-radius:6px; padding:10px 14px; margin-bottom:5px;">
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-            <span style="background:{badge_bg}; color:{badge_color}; font-size:10px; font-weight:700;
-                         padding:2px 8px; border-radius:4px; letter-spacing:0.05em;">{badge_text}</span>
-            <span style="font-size:14px; font-weight:700; color:#d1d4dc;">{ticker}</span>
-            {pnl_html}
-            <span style="font-size:12px; color:#787b86;">{detail_line}</span>
-        </div>
-        <span style="font-size:11px; color:#4b5060; white-space:nowrap; margin-left:12px;">{ts_raw[5:]}</span>
-    </div>
-    {reason_html}
-</div>""", unsafe_allow_html=True)
+        with c_badge:
+            st.markdown(
+                f'<div style="background:{badge_bg}; color:{badge_color}; font-size:10px; '
+                f'font-weight:700; padding:4px 8px; border-radius:4px; text-align:center; '
+                f'margin-top:2px;">{badge_text}</div>',
+                unsafe_allow_html=True,
+            )
+        with c_ticker:
+            st.markdown(f"**{ticker}**")
+        with c_detail:
+            st.markdown(
+                f'<span style="color:#787b86; font-size:12px;">{detail_line}</span>',
+                unsafe_allow_html=True,
+            )
+            if reason_str:
+                st.markdown(
+                    f'<span style="color:#4b5060; font-size:11px;">{reason_str}</span>',
+                    unsafe_allow_html=True,
+                )
+        with c_pnl:
+            if pnl_str:
+                st.markdown(
+                    f'<span style="color:{pnl_color}; font-size:13px; font-weight:700;">{pnl_str}</span>',
+                    unsafe_allow_html=True,
+                )
+        with c_time:
+            st.markdown(
+                f'<span style="color:#4b5060; font-size:11px;">{ts_raw[5:]}</span>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown('<hr style="margin:2px 0; border-color:#2a2e39;">', unsafe_allow_html=True)
 
 
 # ── Signal analyses (expandable) ─────────────────────────────────────────────
@@ -666,7 +687,7 @@ else:
 with st.expander("AI Signal Analyses — Last 24h", expanded=False):
     analyses = [e for e in _load_events(days=1) if e.get("event") == "analysis"]
     if not analyses:
-        st.markdown('<p style="color:#787b86; font-size:13px;">No analyses in the last 24 hours.</p>', unsafe_allow_html=True)
+        st.caption("No analyses in the last 24 hours.")
     else:
         for e in reversed(analyses[-40:]):
             d      = e.get("decision", {})
@@ -679,22 +700,31 @@ with st.expander("AI Signal Analyses — Last 24h", expanded=False):
 
             a_color = "#26a69a" if action == "BUY" else "#ef5350" if action == "SELL" else "#787b86"
             a_bg    = "rgba(38,166,154,0.15)" if action == "BUY" else "rgba(239,83,80,0.15)" if action == "SELL" else "rgba(120,123,134,0.15)"
-            b_left  = f"3px solid {a_color}"
 
-            st.markdown(f"""
-<div style="background:#1e222d; border:1px solid #2a2e39; border-left:{b_left};
-            border-radius:6px; padding:10px 14px; margin-bottom:6px;">
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-        <div style="display:flex; align-items:center; gap:10px;">
-            <span style="background:{a_bg}; color:{a_color}; font-size:11px;
-                         font-weight:700; padding:2px 8px; border-radius:4px;">{action}</span>
-            <span style="font-size:15px; font-weight:700; color:#d1d4dc;">{ticker}</span>
-            <span style="font-size:12px; color:#787b86;">Conf {conf:.0%} &nbsp;·&nbsp; Risk {risk}</span>
-        </div>
-        <span style="font-size:11px; color:#787b86;">{ts}</span>
-    </div>
-    <div style="font-size:11px; color:#787b86; margin-top:4px;">{reason}</div>
-</div>""", unsafe_allow_html=True)
+            ca, ct, cd, ctime = st.columns([1, 1, 5, 1.5])
+            with ca:
+                st.markdown(
+                    f'<div style="background:{a_bg}; color:{a_color}; font-size:10px; font-weight:700; '
+                    f'padding:4px 8px; border-radius:4px; text-align:center; margin-top:2px;">{action}</div>',
+                    unsafe_allow_html=True,
+                )
+            with ct:
+                st.markdown(f"**{ticker}**")
+            with cd:
+                st.markdown(
+                    f'<span style="color:#787b86; font-size:12px;">Conf {conf:.0%} · Risk {risk}</span>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f'<span style="color:#4b5060; font-size:11px;">{reason}</span>',
+                    unsafe_allow_html=True,
+                )
+            with ctime:
+                st.markdown(
+                    f'<span style="color:#4b5060; font-size:11px;">{ts}</span>',
+                    unsafe_allow_html=True,
+                )
+            st.markdown('<hr style="margin:2px 0; border-color:#2a2e39;">', unsafe_allow_html=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 

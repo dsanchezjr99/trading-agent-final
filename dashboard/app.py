@@ -244,30 +244,58 @@ def _pnl_bar_chart(positions: list[dict]) -> go.Figure:
     return fig
 
 
-def _portfolio_chart(history: list[dict]) -> go.Figure | None:
+def _portfolio_chart(history: list[dict], height: int = 260) -> go.Figure | None:
     if len(history) < 2:
         return None
-    df = pd.DataFrame(history).drop_duplicates("date").sort_values("date")
+    df    = pd.DataFrame(history).drop_duplicates("date").sort_values("date")
     start = df["value"].iloc[0]
-    color = "#26a69a" if df["value"].iloc[-1] >= start else "#ef5350"
+    end   = df["value"].iloc[-1]
+    color = "#26a69a" if end >= start else "#ef5350"
+    fill  = "rgba(38,166,154,0.12)" if end >= start else "rgba(239,83,80,0.12)"
 
-    fig = go.Figure(go.Scatter(
+    # Baseline: flat line at start value for the fill to look like TV
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["date"].tolist() + df["date"].tolist()[::-1],
+        y=df["value"].tolist() + [start] * len(df),
+        fill="toself",
+        fillcolor=fill,
+        line=dict(width=0),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
         x=df["date"],
         y=df["value"],
         mode="lines",
-        line=dict(color=color, width=2),
-        fill="tozeroy",
-        fillcolor=f"rgba(38,166,154,0.07)" if color == "#26a69a" else "rgba(239,83,80,0.07)",
+        line=dict(color=color, width=2.5),
         hovertemplate="<b>%{x}</b><br>$%{y:,.2f}<extra></extra>",
+        showlegend=False,
+    ))
+    # Dot at the end
+    fig.add_trace(go.Scatter(
+        x=[df["date"].iloc[-1]],
+        y=[end],
+        mode="markers",
+        marker=dict(color=color, size=8, line=dict(color="#131722", width=2)),
+        hoverinfo="skip",
+        showlegend=False,
     ))
     fig.update_layout(
-        height=180,
+        height=height,
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(color="#787b86", showgrid=False, tickfont=dict(size=10)),
-        yaxis=dict(color="#787b86", showgrid=True, gridcolor="#2a2e39",
-                   tickprefix="$", tickformat=",.0f", tickfont=dict(size=10)),
+        xaxis=dict(
+            color="#787b86", showgrid=False,
+            tickfont=dict(size=10, color="#787b86"),
+            tickformat="%b %d", showline=False, zeroline=False,
+        ),
+        yaxis=dict(
+            color="#787b86", showgrid=True, gridcolor="#2a2e39",
+            tickprefix="$", tickformat=",.0f", tickfont=dict(size=10, color="#787b86"),
+            showline=False, zeroline=False, side="right",
+        ),
         showlegend=False,
         hoverlabel=dict(bgcolor="#2a2e39", font_color="#d1d4dc", bordercolor="#2a2e39"),
     )
@@ -306,93 +334,119 @@ target         = 1_000_000
 progress_pct   = min(portfolio_val / target * 100, 100)
 
 
-# ── Header ────────────────────────────────────────────────────────────────────
+# ── Auto-refresh ─────────────────────────────────────────────────────────────
+st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 
+# ── Navbar ────────────────────────────────────────────────────────────────────
 market_badge = (
     '<span class="badge badge-green">● MARKET OPEN</span>'
     if market_open else
     '<span class="badge badge-gray">● MARKET CLOSED</span>'
 )
+dry   = os.getenv("DRY_RUN", "true").lower() == "true"
+mode  = '<span class="badge badge-gray">PAPER</span>' if dry else '<span class="badge badge-green">LIVE</span>'
 updated = datetime.now().strftime("%b %d %Y  %I:%M:%S %p")
 
 st.markdown(f"""
-<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-    <span style="font-size:20px; font-weight:700; color:#d1d4dc; letter-spacing:-0.3px;">
-        📈 Congressional Trading Agent
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <span style="font-size:16px; font-weight:700; color:#d1d4dc; letter-spacing:-0.3px;">
+        Congressional Trading Agent
     </span>
-    <span style="font-size:12px; color:#787b86;">
-        {market_badge} &nbsp;·&nbsp; {updated} &nbsp;·&nbsp; Auto-refreshes every 60s
+    <span style="font-size:12px; color:#787b86; display:flex; gap:10px; align-items:center;">
+        {mode} {market_badge} &nbsp;·&nbsp; {updated} &nbsp;·&nbsp; refreshes every 60s
     </span>
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
-st.markdown('<hr>', unsafe_allow_html=True)
 
+# ── Hero card: portfolio value + chart ───────────────────────────────────────
 
-# ── Top metrics row ───────────────────────────────────────────────────────────
+pnl_color   = "#26a69a" if unrealized_pnl >= 0 else "#ef5350"
+pnl_sign    = "+" if unrealized_pnl >= 0 else ""
+total_pnl   = unrealized_pnl + realized_pnl
+total_color = "#26a69a" if total_pnl >= 0 else "#ef5350"
+total_sign  = "+" if total_pnl >= 0 else ""
+usd_label   = "USD"
 
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-
-with c1:
-    st.metric("Portfolio Value", f"${portfolio_val:,.2f}")
-with c2:
-    st.metric("Cash", f"${cash:,.2f}")
-with c3:
-    st.metric("Open Positions", len(positions))
-with c4:
-    sign = "+" if unrealized_pnl >= 0 else ""
-    st.metric("Unrealized P&L", f"{sign}${unrealized_pnl:,.2f}",
-              delta=f"{sign}${unrealized_pnl:,.2f}")
-with c5:
-    sign = "+" if realized_pnl >= 0 else ""
-    st.metric("Today's Realized P&L", f"{sign}${realized_pnl:,.2f}",
-              delta=f"{sign}${realized_pnl:,.2f}")
-with c6:
-    st.metric("Target Progress", f"{progress_pct:.1f}%",
-              delta=f"${1_000_000 - portfolio_val:,.0f} to go")
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-
-# ── Progress bar toward $1M ───────────────────────────────────────────────────
+# Build the stat chips below the main value
+chips = f"""
+<div style="display:flex; gap:20px; margin-top:4px; flex-wrap:wrap;">
+    <div>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.07em;">Cash</span><br>
+        <span style="font-size:14px; color:#d1d4dc; font-weight:600;">${cash:,.2f}</span>
+    </div>
+    <div>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.07em;">Unrealized P&L</span><br>
+        <span style="font-size:14px; font-weight:600; color:{pnl_color};">{pnl_sign}${unrealized_pnl:,.2f}</span>
+    </div>
+    <div>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.07em;">Today Realized</span><br>
+        <span style="font-size:14px; font-weight:600; color:{total_color};">{total_sign}${realized_pnl:,.2f}</span>
+    </div>
+    <div>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.07em;">Open Positions</span><br>
+        <span style="font-size:14px; color:#d1d4dc; font-weight:600;">{len(positions)}</span>
+    </div>
+    <div>
+        <span style="font-size:10px; color:#787b86; text-transform:uppercase; letter-spacing:0.07em;">Target Progress</span><br>
+        <span style="font-size:14px; color:#26a69a; font-weight:600;">{progress_pct:.2f}%</span>
+    </div>
+</div>
+"""
 
 st.markdown(f"""
-<div class="tv-card">
-    <div class="tv-card-title">Progress to $1,000,000</div>
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <span style="font-size:13px; color:#787b86;">
-            ${portfolio_val:,.2f} &nbsp;/&nbsp; $1,000,000
+<div style="background:#1e222d; border:1px solid #2a2e39; border-radius:10px;
+            padding:20px 24px 0 24px; margin-bottom:14px;">
+    <div style="font-size:11px; color:#787b86; text-transform:uppercase;
+                letter-spacing:0.08em; margin-bottom:4px;">Portfolio Value</div>
+    <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;">
+        <span style="font-size:42px; font-weight:700; color:#d1d4dc; line-height:1.1;
+                     letter-spacing:-1px;">${portfolio_val:,.2f}</span>
+        <span style="font-size:14px; color:#787b86; font-weight:400; margin-bottom:4px;">{usd_label}</span>
+        <span style="font-size:16px; font-weight:600; color:{total_color};">
+            {total_sign}${total_pnl:,.2f} &nbsp;({total_sign}{(total_pnl/portfolio_val*100) if portfolio_val else 0:.2f}%)
         </span>
-        <span class="pos" style="font-size:13px; font-weight:600;">{progress_pct:.2f}%</span>
     </div>
-    <div style="background:#2a2e39; border-radius:4px; height:8px; overflow:hidden;">
-        <div style="background:linear-gradient(90deg,#26a69a,#00bcd4); width:{progress_pct:.2f}%;
-                    height:100%; border-radius:4px; transition:width 0.5s;"></div>
+    {chips}
+    <div style="margin:0 -24px; margin-top:14px;">
+""", unsafe_allow_html=True)
+
+# Chart injected directly inside the card container
+hero_chart = _portfolio_chart(history, height=260)
+if hero_chart:
+    st.plotly_chart(hero_chart, width="stretch", config={"displayModeBar": False})
+else:
+    # placeholder when no history yet
+    st.markdown("""
+    <div style="height:200px; display:flex; align-items:center; justify-content:center;
+                color:#2a2e39; font-size:13px; border-top:1px solid #2a2e39;">
+        Chart builds after first end-of-day balance sync
+    </div>""", unsafe_allow_html=True)
+
+st.markdown("</div></div>", unsafe_allow_html=True)
+
+# ── Progress bar ─────────────────────────────────────────────────────────────
+st.markdown(f"""
+<div style="background:#1e222d; border:1px solid #2a2e39; border-radius:8px;
+            padding:12px 18px; margin-bottom:14px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <span style="font-size:11px; color:#787b86; text-transform:uppercase;
+                     letter-spacing:0.08em;">Progress to $1,000,000</span>
+        <span style="font-size:12px; color:#26a69a; font-weight:600;">{progress_pct:.2f}% &nbsp;·&nbsp; ${1_000_000-portfolio_val:,.0f} remaining</span>
+    </div>
+    <div style="background:#2a2e39; border-radius:4px; height:6px; overflow:hidden;">
+        <div style="background:linear-gradient(90deg,#26a69a,#00bcd4);
+                    width:{progress_pct:.2f}%; height:100%; border-radius:4px;"></div>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 
-# ── Main layout: left (charts + positions) | right (activity + history) ───────
+# ── Main layout: left (positions) | right (activity + history) ───────────────
 
 left, right = st.columns([2, 1], gap="medium")
 
 with left:
-
-    # ── Portfolio value chart ────────────────────────────────────────────────
-    st.markdown('<div class="tv-card-title" style="margin-bottom:4px;">PORTFOLIO VALUE HISTORY</div>', unsafe_allow_html=True)
-    chart = _portfolio_chart(history)
-    if chart:
-        st.plotly_chart(chart, use_container_width=True, config={"displayModeBar": False})
-    else:
-        st.markdown("""
-        <div style="background:#1e222d; border:1px solid #2a2e39; border-radius:8px;
-                    padding:24px; text-align:center; color:#787b86; font-size:13px;">
-            Chart populates after first end-of-day balance sync
-        </div>""", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Open positions ───────────────────────────────────────────────────────
     st.markdown('<div class="tv-card-title" style="margin-bottom:8px;">OPEN POSITIONS</div>', unsafe_allow_html=True)
@@ -409,7 +463,7 @@ with left:
         # P&L bar chart
         bar = _pnl_bar_chart(positions)
         if bar:
-            st.plotly_chart(bar, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(bar, width="stretch", config={"displayModeBar": False})
 
         # Positions table
         rows = []
@@ -461,45 +515,10 @@ with left:
             .apply(_style_row, axis=1)
             .format({"P&L $": "${:+,.2f}", "P&L %": "{:+.2%}"})
         )
-        st.dataframe(styled, use_container_width=True, hide_index=True, height=min(40 * len(rows) + 38, 300))
+        st.dataframe(styled, width="stretch", hide_index=True, height=min(40 * len(rows) + 38, 300))
 
 
 with right:
-
-    # ── Account stats card ────────────────────────────────────────────────────
-    dry = os.getenv("DRY_RUN", "true").lower() == "true"
-    mode_badge = '<span class="badge badge-gray">PAPER</span>' if dry else '<span class="badge badge-green">LIVE</span>'
-    regime_events = [e for e in today_events if e.get("event") == "bear_market"]
-    regime_badge = (
-        '<span class="badge badge-red">BEAR</span>'
-        if regime_events else
-        '<span class="badge badge-green">BULL</span>'
-    )
-
-    st.markdown(f"""
-    <div class="tv-card">
-        <div class="tv-card-title">Account</div>
-        <div style="display:flex; gap:8px; margin-bottom:12px;">{mode_badge} {regime_badge}</div>
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-            <div>
-                <div style="font-size:10px; color:#787b86; text-transform:uppercase;">Portfolio</div>
-                <div style="font-size:15px; font-weight:700;">${portfolio_val:,.2f}</div>
-            </div>
-            <div>
-                <div style="font-size:10px; color:#787b86; text-transform:uppercase;">Cash</div>
-                <div style="font-size:15px; font-weight:700;">${cash:,.2f}</div>
-            </div>
-            <div>
-                <div style="font-size:10px; color:#787b86; text-transform:uppercase;">Unrealized</div>
-                <div style="font-size:15px; font-weight:700;" class="{'pos' if unrealized_pnl >= 0 else 'neg'}">{'+' if unrealized_pnl >= 0 else ''}${unrealized_pnl:,.2f}</div>
-            </div>
-            <div>
-                <div style="font-size:10px; color:#787b86; text-transform:uppercase;">Realized Today</div>
-                <div style="font-size:15px; font-weight:700;" class="{'pos' if realized_pnl >= 0 else 'neg'}">{'+' if realized_pnl >= 0 else ''}${realized_pnl:,.2f}</div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
 
     # ── Today's activity feed ────────────────────────────────────────────────
     st.markdown('<div class="tv-card-title" style="margin:12px 0 6px;">TODAY\'S ACTIVITY</div>', unsafe_allow_html=True)
@@ -609,7 +628,7 @@ else:
 
     st.dataframe(
         df_hist.style.apply(_color_hist, axis=1),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=min(42 * len(hist) + 38, 320),
     )
@@ -646,7 +665,7 @@ with st.expander("AI Signal Analyses — Last 24h", expanded=False):
 
         st.dataframe(
             pd.DataFrame(sig_rows).style.apply(_color_sig, axis=1),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 

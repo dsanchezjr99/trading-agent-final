@@ -394,9 +394,10 @@ chips = f"""
 </div>
 """
 
+# Hero card header — self-contained, no open divs
 st.markdown(f"""
-<div style="background:#1e222d; border:1px solid #2a2e39; border-radius:10px;
-            padding:20px 24px 0 24px; margin-bottom:14px;">
+<div style="background:#1e222d; border:1px solid #2a2e39; border-radius:10px 10px 0 0;
+            padding:20px 24px 16px 24px;">
     <div style="font-size:11px; color:#787b86; text-transform:uppercase;
                 letter-spacing:0.08em; margin-bottom:4px;">Portfolio Value</div>
     <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;">
@@ -408,22 +409,26 @@ st.markdown(f"""
         </span>
     </div>
     {chips}
-    <div style="margin:0 -24px; margin-top:14px;">
+</div>
 """, unsafe_allow_html=True)
 
-# Chart injected directly inside the card container
+# Chart sits in its own card panel flush below the header
 hero_chart = _portfolio_chart(history, height=260)
 if hero_chart:
-    st.plotly_chart(hero_chart, width="stretch", config={"displayModeBar": False})
-else:
-    # placeholder when no history yet
     st.markdown("""
-    <div style="height:200px; display:flex; align-items:center; justify-content:center;
-                color:#2a2e39; font-size:13px; border-top:1px solid #2a2e39;">
+    <div style="background:#1e222d; border:1px solid #2a2e39; border-top:none;
+                border-radius:0 0 10px 10px; padding:0; overflow:hidden; margin-bottom:14px;">
+    """, unsafe_allow_html=True)
+    st.plotly_chart(hero_chart, width="stretch", config={"displayModeBar": False})
+    st.markdown("</div>", unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <div style="background:#1e222d; border:1px solid #2a2e39; border-top:none;
+                border-radius:0 0 10px 10px; height:180px; display:flex;
+                align-items:center; justify-content:center;
+                color:#787b86; font-size:13px; margin-bottom:14px;">
         Chart builds after first end-of-day balance sync
     </div>""", unsafe_allow_html=True)
-
-st.markdown("</div></div>", unsafe_allow_html=True)
 
 # ── Progress bar ─────────────────────────────────────────────────────────────
 st.markdown(f"""

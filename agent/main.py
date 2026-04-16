@@ -504,8 +504,26 @@ def _next_market_open_utc() -> datetime:
     # Fallback (should never happen)
     return (now_et + timedelta(days=1)).replace(hour=13, minute=25).astimezone(timezone.utc)
 
-_morning_sent_date: str = ""
-_eod_sent_date:     str = ""
+EMAIL_STATE_FILE = LOGS_DIR / "email_state.json"
+
+
+def _load_email_state() -> tuple[str, str]:
+    """Load persisted morning/EOD sent dates so restarts don't re-send."""
+    if EMAIL_STATE_FILE.exists():
+        try:
+            data = json.loads(EMAIL_STATE_FILE.read_text())
+            return data.get("morning", ""), data.get("eod", "")
+        except Exception:
+            pass
+    return "", ""
+
+
+def _save_email_state(morning: str, eod: str) -> None:
+    LOGS_DIR.mkdir(exist_ok=True)
+    EMAIL_STATE_FILE.write_text(json.dumps({"morning": morning, "eod": eod}))
+
+
+_morning_sent_date, _eod_sent_date = _load_email_state()
 
 
 def _maybe_send_morning() -> None:
@@ -514,6 +532,7 @@ def _maybe_send_morning() -> None:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if _morning_sent_date != today:
         _morning_sent_date = today
+        _save_email_state(_morning_sent_date, _eod_sent_date)
         send_morning_email()
 
 
@@ -523,7 +542,18 @@ def _maybe_send_eod() -> None:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if _eod_sent_date != today:
         _eod_sent_date = today
+        _save_email_state(_morning_sent_date, _eod_sent_date)
         send_eod_email()
+
+
+def _secs_until_eod() -> float:
+    """Seconds until today's EOD email time (20:15 UTC). Returns large value if already past."""
+    now_utc = datetime.now(timezone.utc)
+    today   = now_utc.date()
+    eod_h, eod_m = map(int, MARKET_CLOSE_UTC.split(":"))
+    eod_today = datetime(today.year, today.month, today.day, eod_h, eod_m, tzinfo=timezone.utc)
+    delta = (eod_today - now_utc).total_seconds()
+    return delta if delta > 0 else float("inf")
 
 
 def run() -> None:
@@ -545,14 +575,13 @@ def run() -> None:
         if _is_trading_hours():
             time.sleep(30)
         else:
-            # Sleep until the next scheduled job (e.g. EOD email) OR next market open,
-            # whichever comes first — avoids spinning all night / over weekends.
-            next_open  = _next_market_open_utc()
-            now_utc    = datetime.now(timezone.utc)
-            secs_to_open = (next_open - now_utc).total_seconds()
-            idle         = schedule.idle_seconds()         # secs until next scheduled job
-            sleep_secs   = min(secs_to_open, idle) if (idle and idle > 0) else secs_to_open
-            sleep_secs   = max(30, sleep_secs)
+            # Sleep until EOD email time OR next market open — whichever is sooner.
+            # Deliberately ignore schedule.idle_seconds() here because the recurring
+            # 15/30-min poll jobs would otherwise keep waking us all night for no reason.
+            now_utc      = datetime.now(timezone.utc)
+            secs_to_open = (_next_market_open_utc() - now_utc).total_seconds()
+            secs_to_eod  = _secs_until_eod()
+            sleep_secs   = max(30, min(secs_to_open, secs_to_eod))
             wake_at      = (now_utc + timedelta(seconds=sleep_secs)).strftime("%Y-%m-%d %H:%M UTC")
             print(f"[agent] Market closed — sleeping {sleep_secs/3600:.1f}h (wake at {wake_at})")
             time.sleep(sleep_secs)

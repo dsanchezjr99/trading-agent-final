@@ -1,302 +1,225 @@
 """
 committees.py
-Congressional committee membership — used to flag when a member trades
-in a sector their committee directly oversees (highest-conviction signal).
+Congressional committee membership — flags when a member trades in a sector
+their committee directly oversees (highest-conviction signal class).
 
-Primary source: ProPublica Congress API (free key at propublica.org/datastore/api)
-  Set PROPUBLICA_API_KEY in .env to enable live lookups.
-Fallback: Static 119th Congress map (chairs + key members of market-moving committees).
+Source: unitedstates/congress-legislators (GitHub, no API key required)
+  https://github.com/unitedstates/congress-legislators
+  Fetched fresh on startup, cached to disk for the session.
 """
 
+import json
 import os
 import requests
-from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+try:
+    import yaml
+    _YAML_AVAILABLE = True
+except ImportError:
+    _YAML_AVAILABLE = False
 
-PROPUBLICA_API_KEY = os.getenv("PROPUBLICA_API_KEY", "")
-PROPUBLICA_BASE    = "https://api.propublica.org/congress/v1"
-CONGRESS_NUM       = 119  # 119th Congress (2025–2027)
+MEMBERSHIP_URL = (
+    "https://raw.githubusercontent.com/unitedstates/congress-legislators"
+    "/main/committee-membership-current.yaml"
+)
 
-# ── Sector relevance map ──────────────────────────────────────────────────────
-# Which committees carry oversight advantage over which GICS sectors.
-# When a member trades in a sector their committee oversees, it's the highest
-# signal strength — they have non-public knowledge of contracts, regulation, etc.
+CACHE_FILE = Path(__file__).parent.parent / "logs" / "committee_cache.json"
 
-COMMITTEE_TO_SECTORS: dict[str, list[str]] = {
-    "Armed Services":                          ["Defense", "Aerospace & Defense"],
-    "Intelligence":                            ["Defense", "Technology", "Aerospace & Defense"],
-    "Financial Services":                      ["Financials", "Banks"],
-    "Banking, Housing, and Urban Affairs":     ["Financials", "Real Estate"],
-    "Energy and Commerce":                     ["Energy", "Technology", "Health Care", "Communication Services"],
-    "Energy and Natural Resources":            ["Energy", "Utilities"],
-    "Environment and Public Works":            ["Energy", "Utilities", "Industrials"],
-    "Health, Education, Labor, and Pensions":  ["Health Care", "Pharmaceuticals & Biotechnology"],
-    "Ways and Means":                          ["Financials", "Health Care"],
-    "Agriculture":                             ["Consumer Staples", "Materials"],
-    "Science, Space, and Technology":          ["Technology", "Aerospace & Defense"],
-    "Commerce, Science, and Transportation":   ["Technology", "Communication Services", "Industrials"],
-    "Judiciary":                               ["Technology"],
-    "Appropriations":                          ["Defense", "Health Care", "Industrials"],
+# ── Target committees and their GICS sector overlap ───────────────────────────
+# Only the committees where oversight = real informational edge on specific sectors.
+# Key: committee code from unitedstates/congress-legislators
+# Value: (human name, [GICS sectors])
+
+TARGET_COMMITTEES: dict[str, tuple[str, list[str]]] = {
+    "HSAS": ("House Armed Services",            ["Defense", "Aerospace & Defense"]),
+    "SSAS": ("Senate Armed Services",           ["Defense", "Aerospace & Defense"]),
+    "HLIG": ("House Intelligence",              ["Defense", "Technology", "Aerospace & Defense"]),
+    "SLIN": ("Senate Intelligence",             ["Defense", "Technology", "Aerospace & Defense"]),
+    "HSBA": ("House Financial Services",        ["Financials", "Banks", "Real Estate"]),
+    "SSBK": ("Senate Banking",                  ["Financials", "Banks", "Real Estate"]),
+    "HSIF": ("House Energy and Commerce",       ["Energy", "Technology", "Health Care", "Communication Services"]),
+    "SSEG": ("Senate Energy",                   ["Energy", "Utilities"]),
+    "SSHR": ("Senate HELP",                     ["Health Care", "Pharmaceuticals & Biotechnology"]),
+    "HSWM": ("House Ways and Means",            ["Financials", "Health Care"]),
+    "SSFI": ("Senate Finance",                  ["Financials", "Health Care"]),
+    "HSSY": ("House Science & Technology",      ["Technology", "Aerospace & Defense"]),
+    "SSCM": ("Senate Commerce",                 ["Technology", "Communication Services", "Industrials"]),
+    "HSAP": ("House Appropriations",            ["Defense", "Health Care", "Industrials"]),
+    "SSAP": ("Senate Appropriations",           ["Defense", "Health Care", "Industrials"]),
+    "HSJU": ("House Judiciary",                 ["Technology"]),
+    "SSJU": ("Senate Judiciary",                ["Technology"]),
 }
 
-# ── Static 119th Congress fallback ───────────────────────────────────────────
-# Covers chairs, ranking members, and the most active traders from each
-# key oversight committee. Updated for 2025–2027 session.
-
-STATIC_MEMBER_COMMITTEES: dict[str, list[str]] = {
-    # House Armed Services
-    "mike rogers":              ["Armed Services"],
-    "adam smith":               ["Armed Services"],
-    "rob wittman":              ["Armed Services"],
-    "jack bergman":             ["Armed Services"],
-    "don bacon":                ["Armed Services"],
-    "austin scott":             ["Armed Services"],
-    "michael waltz":            ["Armed Services"],
-    "elissa slotkin":           ["Armed Services"],
-    "chrissy houlahan":         ["Armed Services"],
-    "seth moulton":             ["Armed Services"],
-    "mike gallagher":           ["Armed Services"],
-    "pat ryan":                 ["Armed Services"],
-    # Senate Armed Services
-    "roger wicker":             ["Armed Services", "Commerce, Science, and Transportation"],
-    "jack reed":                ["Armed Services"],
-    "tom cotton":               ["Armed Services", "Intelligence"],
-    "angus king":               ["Armed Services", "Intelligence"],
-    "jeanne shaheen":           ["Armed Services"],
-    "kirsten gillibrand":       ["Armed Services"],
-    "mark kelly":               ["Armed Services"],
-    "dan sullivan":             ["Armed Services"],
-    "joni ernst":               ["Armed Services"],
-    "thom tillis":              ["Armed Services"],
-    # House Intelligence
-    "mike turner":              ["Intelligence"],
-    "jim himes":                ["Intelligence"],
-    "adam schiff":              ["Intelligence"],
-    "andre carson":             ["Intelligence"],
-    "raja krishnamoorthi":      ["Intelligence"],
-    # Senate Intelligence
-    "mark warner":              ["Intelligence"],
-    "marco rubio":              ["Intelligence"],
-    "richard burr":             ["Intelligence"],
-    "susan collins":            ["Intelligence", "Appropriations"],
-    "john ratcliffe":           ["Intelligence"],
-    "james lankford":           ["Intelligence"],
-    # House Financial Services
-    "french hill":              ["Financial Services"],
-    "maxine waters":            ["Financial Services"],
-    "bill huizenga":            ["Financial Services"],
-    "ann wagner":               ["Financial Services"],
-    "blaine luetkemeyer":       ["Financial Services"],
-    "patrick mchenry":          ["Financial Services"],
-    "josh gottheimer":          ["Financial Services"],
-    "brad sherman":             ["Financial Services"],
-    # Senate Banking
-    "tim scott":                ["Banking, Housing, and Urban Affairs"],
-    "sherrod brown":            ["Banking, Housing, and Urban Affairs"],
-    "elizabeth warren":         ["Banking, Housing, and Urban Affairs"],
-    "jon tester":               ["Banking, Housing, and Urban Affairs"],
-    "mark warner":              ["Banking, Housing, and Urban Affairs", "Intelligence"],
-    "kyrsten sinema":           ["Banking, Housing, and Urban Affairs"],
-    # House Energy & Commerce
-    "brett guthrie":            ["Energy and Commerce"],
-    "frank pallone":            ["Energy and Commerce"],
-    "cathy mcmorris rodgers":   ["Energy and Commerce"],
-    "bob latta":                ["Energy and Commerce"],
-    "anna eshoo":               ["Energy and Commerce"],
-    "diana degette":            ["Energy and Commerce"],
-    # Senate Energy & Natural Resources
-    "john barrasso":            ["Energy and Natural Resources"],
-    "joe manchin":              ["Energy and Natural Resources"],
-    "lisa murkowski":           ["Energy and Natural Resources", "Appropriations"],
-    "maria cantwell":           ["Energy and Natural Resources", "Commerce, Science, and Transportation"],
-    "martin heinrich":          ["Energy and Natural Resources", "Intelligence"],
-    # Senate HELP
-    "bill cassidy":             ["Health, Education, Labor, and Pensions"],
-    "bernie sanders":           ["Health, Education, Labor, and Pensions"],
-    "patty murray":             ["Health, Education, Labor, and Pensions"],
-    "chris murphy":             ["Health, Education, Labor, and Pensions"],
-    "maggie hassan":            ["Health, Education, Labor, and Pensions"],
-    # House Ways & Means
-    "jason smith":              ["Ways and Means"],
-    "richard neal":             ["Ways and Means"],
-    "kevin brady":              ["Ways and Means"],
-    "ron kind":                 ["Ways and Means"],
-    "mike thompson":            ["Ways and Means"],
-    # Appropriations (broad defense + health spending)
-    "rosa delauro":             ["Appropriations"],
-    "kay granger":              ["Appropriations"],
-    "shelley moore capito":     ["Appropriations"],
-    "harold rogers":            ["Appropriations"],
-    "tom cole":                 ["Appropriations"],
-    # Science / Tech
-    "frank lucas":              ["Science, Space, and Technology"],
-    "zoe lofgren":              ["Science, Space, and Technology"],
-    "ted cruz":                 ["Commerce, Science, and Transportation"],
-    "amy klobuchar":            ["Commerce, Science, and Transportation"],
-    "john thune":               ["Commerce, Science, and Transportation"],
-    # Judiciary (tech antitrust)
-    "jim jordan":               ["Judiciary"],
-    "jerry nadler":             ["Judiciary"],
-    "david cicilline":          ["Judiciary"],
-    "ken buck":                 ["Judiciary"],
-    # Agriculture
-    "gt thompson":              ["Agriculture"],
-    "david scott":              ["Agriculture"],
-    "mike conaway":             ["Agriculture"],
-    "debbie stabenow":          ["Agriculture"],
-    "john boozman":             ["Agriculture"],
-}
-
-
-# ── ProPublica live integration ───────────────────────────────────────────────
-
-_propublica_id_map:    dict[str, str]        = {}  # normalized_name → member_id
-_propublica_id_loaded: bool                  = False
-_committee_cache:      dict[str, list[str]]  = {}  # normalized_name → [committees]
+# ── In-memory cache ────────────────────────────────────────────────────────────
+_member_committees: dict[str, list[str]] = {}   # normalized_name → [committee human names]
+_loaded: bool = False
 
 
 def _normalize(name: str) -> str:
-    """Lowercase, strip titles and extra whitespace."""
-    name = name.lower().strip()
-    for prefix in ("rep.", "sen.", "representative", "senator", "mr.", "mrs.", "dr."):
-        if name.startswith(prefix):
-            name = name[len(prefix):].strip()
-    return name
+    return name.lower().strip()
 
 
-def _load_propublica_id_map() -> None:
-    """Fetch all current member name→ID mappings from ProPublica (once per session)."""
-    global _propublica_id_loaded
-    if _propublica_id_loaded or not PROPUBLICA_API_KEY:
+def _load(force: bool = False) -> None:
+    """
+    Build the member→committees map from the GitHub YAML.
+    Falls back to disk cache if the fetch fails.
+    Skips if already loaded (once per process lifetime unless force=True).
+    """
+    global _loaded, _member_committees
+
+    if _loaded and not force:
         return
-    _propublica_id_loaded = True
 
-    headers = {"X-API-Key": PROPUBLICA_API_KEY}
-    for chamber in ("house", "senate"):
-        try:
-            resp = requests.get(
-                f"{PROPUBLICA_BASE}/{CONGRESS_NUM}/{chamber}/members.json",
-                headers=headers,
-                timeout=15,
-            )
-            resp.raise_for_status()
-            members = resp.json()["results"][0]["members"]
-            for m in members:
-                full = f"{m.get('first_name', '')} {m.get('last_name', '')}".strip()
-                _propublica_id_map[_normalize(full)] = m["id"]
-            print(f"[committees] Loaded {len(members)} {chamber} member IDs from ProPublica")
-        except Exception as e:
-            print(f"[committees] ProPublica {chamber} member load failed: {e}")
+    if not _YAML_AVAILABLE:
+        print("[committees] PyYAML not installed — committee tagging disabled. Run: pip install pyyaml")
+        _loaded = True
+        return
 
-
-def _fetch_from_propublica(member_name: str) -> list[str]:
-    """Fetch a specific member's current committee assignments via ProPublica."""
-    if not PROPUBLICA_API_KEY:
-        return []
-
-    _load_propublica_id_map()
-    normalized  = _normalize(member_name)
-    member_id   = _propublica_id_map.get(normalized)
-
-    if not member_id:
-        # Try last-name-only match against the ID map
-        last = normalized.split()[-1] if normalized else ""
-        matches = [(k, v) for k, v in _propublica_id_map.items() if k.split()[-1] == last]
-        if len(matches) == 1:
-            member_id = matches[0][1]
-
-    if not member_id:
-        return []
-
+    # Try fetching fresh data
     try:
-        resp = requests.get(
-            f"{PROPUBLICA_BASE}/members/{member_id}.json",
-            headers={"X-API-Key": PROPUBLICA_API_KEY},
-            timeout=10,
-        )
+        resp = requests.get(MEMBERSHIP_URL, timeout=15)
         resp.raise_for_status()
-        roles = resp.json()["results"][0].get("roles", [])
-        committees: list[str] = []
-        for role in roles:
-            if str(role.get("congress", "")) == str(CONGRESS_NUM):
-                for c in role.get("committees", []):
-                    name = c.get("name", "").replace(" Committee", "").strip()
-                    if name:
-                        committees.append(name)
-                for c in role.get("subcommittees", []):
-                    name = c.get("name", "").strip()
-                    if name:
-                        committees.append(name)
-        return committees
+        raw = yaml.safe_load(resp.text)
+        _build_map(raw)
+        _save_cache()
+        print(f"[committees] Loaded live committee data — {len(_member_committees)} members mapped")
+        _loaded = True
+        return
     except Exception as e:
-        print(f"[committees] ProPublica detail fetch failed for {member_name}: {e}")
-        return []
+        print(f"[committees] Live fetch failed ({e}) — trying disk cache")
+
+    # Fall back to disk cache
+    if CACHE_FILE.exists():
+        try:
+            _member_committees = json.loads(CACHE_FILE.read_text())
+            print(f"[committees] Loaded from disk cache — {len(_member_committees)} members")
+            _loaded = True
+            return
+        except Exception as e:
+            print(f"[committees] Disk cache load failed: {e}")
+
+    print("[committees] No committee data available — using static fallback only")
+    _load_static_fallback()
+    _loaded = True
+
+
+def _build_map(raw: dict) -> None:
+    """Parse YAML committee membership into member→[committee names] map."""
+    global _member_committees
+    _member_committees = {}
+
+    for code, members in raw.items():
+        if code not in TARGET_COMMITTEES:
+            continue
+        committee_name = TARGET_COMMITTEES[code][0]
+        if not isinstance(members, list):
+            continue
+        for m in members:
+            name = _normalize(m.get("name", ""))
+            if not name:
+                continue
+            if name not in _member_committees:
+                _member_committees[name] = []
+            if committee_name not in _member_committees[name]:
+                _member_committees[name].append(committee_name)
+
+
+def _save_cache() -> None:
+    try:
+        CACHE_FILE.parent.mkdir(exist_ok=True)
+        CACHE_FILE.write_text(json.dumps(_member_committees, indent=2))
+    except Exception as e:
+        print(f"[committees] Cache save failed: {e}")
+
+
+def _load_static_fallback() -> None:
+    """Minimal static map for the 119th Congress — used only if GitHub and cache both fail."""
+    global _member_committees
+    static = {
+        # House Armed Services
+        "mike rogers": ["House Armed Services"],
+        "adam smith": ["House Armed Services"],
+        "rob wittman": ["House Armed Services"],
+        "jack bergman": ["House Armed Services"],
+        "don bacon": ["House Armed Services"],
+        "austin scott": ["House Armed Services"],
+        # Senate Armed Services
+        "roger wicker": ["Senate Armed Services", "Senate Commerce"],
+        "jack reed": ["Senate Armed Services"],
+        "tom cotton": ["Senate Armed Services", "Senate Intelligence"],
+        "angus king": ["Senate Armed Services", "Senate Intelligence"],
+        "jeanne shaheen": ["Senate Armed Services"],
+        "kirsten gillibrand": ["Senate Armed Services"],
+        "mark kelly": ["Senate Armed Services"],
+        # Intelligence
+        "mike turner": ["House Intelligence"],
+        "jim himes": ["House Intelligence"],
+        "mark warner": ["Senate Intelligence", "Senate Banking"],
+        "marco rubio": ["Senate Intelligence"],
+        # Financial Services
+        "french hill": ["House Financial Services"],
+        "maxine waters": ["House Financial Services"],
+        "tim scott": ["Senate Banking"],
+        "sherrod brown": ["Senate Banking"],
+        "elizabeth warren": ["Senate Banking"],
+        # Energy
+        "brett guthrie": ["House Energy and Commerce"],
+        "frank pallone": ["House Energy and Commerce"],
+        "john barrasso": ["Senate Energy"],
+        "joe manchin": ["Senate Energy"],
+        "lisa murkowski": ["Senate Energy", "Senate Appropriations"],
+        # Health
+        "bill cassidy": ["Senate HELP"],
+        "bernie sanders": ["Senate HELP"],
+        "patty murray": ["Senate HELP"],
+        # Ways & Means / Finance
+        "jason smith": ["House Ways and Means"],
+        "richard neal": ["House Ways and Means"],
+        # Appropriations
+        "rosa delauro": ["House Appropriations"],
+        "kay granger": ["House Appropriations"],
+        "susan collins": ["Senate Appropriations", "Senate Intelligence"],
+        # Tech
+        "frank lucas": ["House Science & Technology"],
+        "ted cruz": ["Senate Commerce"],
+        "maria cantwell": ["Senate Commerce", "Senate Energy"],
+        "amy klobuchar": ["Senate Commerce"],
+        "jim jordan": ["House Judiciary"],
+        "jerry nadler": ["House Judiciary"],
+    }
+    _member_committees.update(static)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_member_committees(member_name: str) -> list[str]:
     """
-    Returns committee names for a congressional member.
-    Uses ProPublica API if key is set; falls back to static 119th Congress map.
-    Results are cached for the session lifetime.
+    Returns list of relevant committee names for a congressional member.
+    Loads data on first call.
     """
+    _load()
     normalized = _normalize(member_name)
 
-    if normalized in _committee_cache:
-        return _committee_cache[normalized]
+    if normalized in _member_committees:
+        return _member_committees[normalized]
 
-    # ProPublica live lookup
-    if PROPUBLICA_API_KEY:
-        committees = _fetch_from_propublica(member_name)
-        if committees:
-            _committee_cache[normalized] = committees
-            return committees
-
-    # Static fallback — exact match first
-    if normalized in STATIC_MEMBER_COMMITTEES:
-        result = STATIC_MEMBER_COMMITTEES[normalized]
-        _committee_cache[normalized] = result
-        return result
-
-    # Partial last-name match (only if unambiguous)
+    # Try last-name-only match (handles name format variations), but only if unambiguous
     last = normalized.split()[-1] if normalized else ""
-    matches = [v for k, v in STATIC_MEMBER_COMMITTEES.items() if k.split()[-1] == last]
+    matches = [v for k, v in _member_committees.items() if k.split()[-1] == last]
     if len(matches) == 1:
-        _committee_cache[normalized] = matches[0]
         return matches[0]
 
-    _committee_cache[normalized] = []
     return []
 
 
 def get_committee_tag(member_name: str) -> str:
     """
-    Returns a bracketed committee tag for inclusion in trade summaries.
-    E.g., "[CMTE: Armed Services, Intelligence]"
+    Returns a bracketed committee tag for the trade summary prompt.
+    E.g., "[CMTE: House Armed Services, Senate Intelligence]"
     Returns empty string if no committee data found.
     """
     committees = get_member_committees(member_name)
     if not committees:
         return ""
-    # Shorten to most relevant (first 2)
-    short = committees[:2]
-    return f"[CMTE: {', '.join(short)}]"
-
-
-def has_oversight_relevance(member_name: str, sector: str) -> bool:
-    """
-    Returns True if the member sits on a committee that directly oversees
-    the given GICS sector. Used to flag highest-conviction trades.
-    """
-    committees = get_member_committees(member_name)
-    sector_lower = sector.lower()
-    for committee in committees:
-        # Match committee name to COMMITTEE_TO_SECTORS keys (partial match)
-        for key, sectors in COMMITTEE_TO_SECTORS.items():
-            if key.lower() in committee.lower() or committee.lower() in key.lower():
-                for s in sectors:
-                    if s.lower() in sector_lower or sector_lower in s.lower():
-                        return True
-    return False
+    return f"[CMTE: {', '.join(committees[:2])}]"

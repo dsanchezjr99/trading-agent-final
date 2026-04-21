@@ -98,7 +98,7 @@ The agent maintains a committee membership map for the 119th Congress (2025–20
 
 When a member's committee maps to the sector of the stock they traded, Claude treats this as the strongest possible signal class — these members have non-public knowledge of contracts, regulations, and budget decisions in their oversight domain.
 
-The committee data is sourced from the **ProPublica Congress API** (free). If a ProPublica key is not configured, the agent falls back to a static map of ~60 key members hardcoded for the 119th Congress.
+The committee data is sourced from the **unitedstates/congress-legislators** project on GitHub — no API key required. The agent fetches the live `committee-membership-current.yaml` on startup, caches it to disk, and falls back to a static 119th Congress map if the fetch fails.
 
 ---
 
@@ -128,7 +128,7 @@ The committee data is sourced from the **ProPublica Congress API** (free). If a 
 | House Stock Watcher | Congressional trade disclosures (House) |
 | Senate Stock Watcher | Congressional trade disclosures (Senate) |
 | Quiver Quantitative | Supplementary congressional trade data |
-| ProPublica Congress API | Committee membership (live, free) |
+| unitedstates/congress-legislators | Committee membership (GitHub, no key required) |
 | Alpaca Data API | Price bars, market data, order execution |
 | Alpha Vantage | News headlines and sentiment scores |
 | SEC EDGAR | 8-K, Form 4, and 10-Q filings |
@@ -170,7 +170,7 @@ Key settings in `.env`:
 | `MAX_OPEN_POSITIONS` | `8` | Max concurrent positions |
 | `MAX_SECTOR_POSITIONS` | `2` | Max positions per GICS sector |
 | `MIN_TRADE_AMOUNT` | `15000` | Minimum congressional trade size to consider |
-| `PROPUBLICA_API_KEY` | — | Free API key for live committee membership data |
+| — | — | Committee data fetched automatically from GitHub, no key needed |
 
 ---
 

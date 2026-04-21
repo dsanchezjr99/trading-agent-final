@@ -51,7 +51,7 @@ from agent.broker       import (
     is_market_open,
 )
 
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_MINUTES", 30))
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_MINUTES", 5))
 LOGS_DIR      = Path(__file__).parent.parent / "logs"
 SEEN_FILE     = LOGS_DIR / "seen_disclosures.json"
 META_FILE     = LOGS_DIR / "positions_meta.json"   # entry date, hold days, sector per position

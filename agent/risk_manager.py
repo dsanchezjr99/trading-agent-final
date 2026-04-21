@@ -10,13 +10,17 @@ from data.market import vol_size_scalar
 
 load_dotenv()
 
-MAX_POSITION_PCT   = float(os.getenv("MAX_POSITION_PCT",   0.15))
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS",   8))
-MAX_SECTOR_POSITIONS = int(os.getenv("MAX_SECTOR_POSITIONS", 2))
-STOP_LOSS_PCT      = float(os.getenv("STOP_LOSS_PCT",      0.05))
-TAKE_PROFIT_PCT    = float(os.getenv("TAKE_PROFIT_PCT",    0.20))
-MIN_CONFIDENCE     = float(os.getenv("MIN_CONFIDENCE",     0.70))
-HARD_CAP_DOLLARS   = 12500.0
+MAX_POSITION_PCT     = float(os.getenv("MAX_POSITION_PCT",     0.15))
+MAX_OPEN_POSITIONS   = int(os.getenv("MAX_OPEN_POSITIONS",     8))
+MAX_SECTOR_POSITIONS = int(os.getenv("MAX_SECTOR_POSITIONS",   2))
+STOP_LOSS_PCT        = float(os.getenv("STOP_LOSS_PCT",        0.05))
+TAKE_PROFIT_PCT      = float(os.getenv("TAKE_PROFIT_PCT",      0.20))
+MIN_CONFIDENCE       = float(os.getenv("MIN_CONFIDENCE",       0.70))
+# Hard cap scales with portfolio: no fixed dollar ceiling.
+# HARD_CAP_PCT caps any single position as a % of total portfolio value.
+# Defaults to MAX_POSITION_PCT so it matches the sizing intent and grows
+# automatically as the account grows (was hardcoded at $12,500).
+HARD_CAP_PCT         = float(os.getenv("HARD_CAP_PCT", MAX_POSITION_PCT))
 
 
 def evaluate(
@@ -89,8 +93,9 @@ def evaluate(
     # Scale down for high-volatility tickers (high-vol → smaller position)
     vol_adjusted  = conf_adjusted * vol_size_scalar(volatility)
 
-    # Apply hard cap
-    dollar_amount = min(vol_adjusted, HARD_CAP_DOLLARS)
+    # Apply portfolio-relative hard cap (grows automatically as account grows)
+    hard_cap      = portfolio_value * HARD_CAP_PCT
+    dollar_amount = min(vol_adjusted, hard_cap)
     dollar_amount = round(dollar_amount, 2)
 
     if dollar_amount < 1.0:
@@ -111,7 +116,8 @@ def evaluate(
 
     return True, order, (
         f"Approved: {action} ${dollar_amount:.2f} of {ticker} "
-        f"(confidence {confidence:.0%}, vol {volatility:.0%}, sector {sector}, risk {risk_level})"
+        f"(confidence {confidence:.0%}, vol {volatility:.0%}, sector {sector}, risk {risk_level}, "
+        f"hard cap ${hard_cap:,.0f})"
     )
 
 

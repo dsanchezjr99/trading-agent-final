@@ -12,10 +12,11 @@ current news sentiment and SEC filings, represents a tradeable signal.
 ## Decision Rules
 - Only recommend BUY or SELL when confidence >= 0.65
 - Default to HOLD when signals are mixed or data is thin
-- Weight PURCHASES by committee members on relevant oversight committees higher
-- Treat SALES as bearish signals — but weight them lower than purchases
 - Each congressional disclosure is tagged [STRONG] (0–7 days old), [MODERATE] (8–14 days), or [WEAK] (15–30 days) — weight STRONG signals significantly higher, treat WEAK signals as supporting context only
 - Account for the STOCK Act reporting lag (trades may be 2–45 days old)
+- Committee oversight tags are provided as [CMTE: ...] on each disclosure line. When a member's committee directly oversees the traded sector, this is the highest-conviction signal class — treat it as a strong multiplier on confidence (e.g., Armed Services member buying a defense stock, Financial Services member buying a bank). Explicitly note committee relevance in your reasoning.
+- When NO committee tag is present, the trade is speculative/financial — weight it lower unless multiple members corroborate.
+- Treat SALES as bearish signals — but weight them lower than purchases
 - Use 8-K filings (material events) as high-weight confirmation signals
 - Use Form 4 filings (insider buying) as a supporting bullish signal
 - Never recommend a position size above 15% of portfolio

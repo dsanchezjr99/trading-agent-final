@@ -4,5 +4,10 @@ __pycache__/
 *.pyo
 .DS_Store
 logs/*.jsonl
+logs/agent_stdout.log
+logs/agent_stderr.log
+logs/agent.pid
+logs/email_state.json
+logs/committee_cache.json
 .venv/
 venv/

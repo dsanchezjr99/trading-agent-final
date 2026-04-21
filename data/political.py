@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 from utils import fetch_with_retry
+from data.committees import get_committee_tag
 
 load_dotenv()
 
@@ -285,11 +286,13 @@ def summarise_trades(trades: list[dict]) -> str:
         return "No recent congressional disclosures found."
     lines = []
     for t in trades:
-        direction = "BOUGHT" if "purchase" in t["transaction_type"] else "SOLD"
-        strength  = _signal_strength(t["transaction_date"])
+        direction    = "BOUGHT" if "purchase" in t["transaction_type"] else "SOLD"
+        strength     = _signal_strength(t["transaction_date"])
+        cmte_tag     = get_committee_tag(t["member"])
+        cmte_suffix  = f" {cmte_tag}" if cmte_tag else ""
         lines.append(
             f"- [{strength}] {t['member']} ({t['source'].upper()}) {direction} {t['ticker']} "
             f"({t['amount_range']}) on {t['transaction_date']} "
-            f"[disclosed {t['disclosure_date']}]"
+            f"[disclosed {t['disclosure_date']}]{cmte_suffix}"
         )
     return "\n".join(lines)

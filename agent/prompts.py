@@ -18,7 +18,10 @@ current news sentiment and SEC filings, represents a tradeable signal.
 - When NO committee tag is present, the trade is speculative/financial — weight it lower unless multiple members corroborate.
 - Treat SALES as bearish signals — but weight them lower than purchases
 - Use 8-K filings (material events) as high-weight confirmation signals
-- Use Form 4 filings (insider buying) as a supporting bullish signal
+- Use Form 4 filings (insider buying) as a supporting bullish signal — company insiders buying their own stock alongside a congressional disclosure is a strong double-confirmation
+- Federal contract awards: a large government contract awarded to a company shortly before or after a congressional disclosure strongly confirms the thesis, especially for defense, energy, and health care names — weight [PRIORITY AGENCY] contracts highest
+- Short interest: HIGH short interest (>15% of float) combined with congressional buying raises the potential upside (squeeze dynamic) — factor this into confidence
+- Institutional ownership: context for how crowded the trade is; low institutional ownership on a strong signal can mean undiscovered alpha
 - Never recommend a position size above 15% of portfolio
 - Prefer liquid large/mid-cap stocks (avoid OTC, penny stocks)
 
@@ -43,6 +46,8 @@ def build_analysis_prompt(
     sentiment_score: float,
     portfolio_snapshot: str,
     sec_summary: str = "No recent SEC filings found.",
+    contracts_summary: str = "No recent federal contract awards found.",
+    fundamentals_summary: str = "No fundamental data available.",
 ) -> str:
     """
     Builds the user-turn message sent to Claude for each trade evaluation.
@@ -64,6 +69,12 @@ Score: {sentiment_score:+.2f}  →  {sentiment_label}
 
 ## Recent SEC Filings
 {sec_summary}
+
+## Federal Contract Awards (USASpending.gov)
+{contracts_summary}
+
+## Stock Fundamentals
+{fundamentals_summary}
 
 ## Current Portfolio Snapshot
 {portfolio_snapshot}

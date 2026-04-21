@@ -1,90 +1,150 @@
 """
 sec.py
-Fetches recent SEC EDGAR filings for a given ticker from sec-api.io.
-Focuses on 8-K (material events), 10-Q (quarterly reports), and Form 4 (insider trades).
-Requires SEC_API_KEY in .env — free tier: 100 requests/month.
+Fetches recent SEC EDGAR filings using the official EDGAR REST API.
+No API key required. No monthly request cap.
+Replaces sec-api.io (which had a 100 req/month free tier limit).
+
+Endpoints used:
+  https://www.sec.gov/files/company_tickers.json  — ticker → CIK map
+  https://data.sec.gov/submissions/CIK{cik}.json  — recent filings per company
 """
 
-import os
+import time
 import requests
 from datetime import datetime, timedelta, timezone
-from dotenv import load_dotenv
 
-from utils import fetch_with_retry
+EDGAR_BASE   = "https://data.sec.gov"
+TICKERS_URL  = "https://www.sec.gov/files/company_tickers.json"
 
-load_dotenv()
+# SEC requires a descriptive User-Agent — use app name + contact email
+_HEADERS = {"User-Agent": "trading-agent dsanchezjr99@gmail.com"}
 
-SEC_API_KEY  = os.getenv("SEC_API_KEY")
-SEC_API_BASE = "https://api.sec-api.io"
-
-
-def _post_json(url: str, payload: dict, headers: dict) -> dict:
-    resp = requests.post(url, json=payload, headers=headers, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
+# ── CIK map (loaded once, cached for process lifetime) ────────────────────────
+_ticker_cik:  dict[str, str] = {}
+_cik_loaded:  bool           = False
 
 
-def get_sec_filings(ticker: str, days_back: int = 14, forms: str = "8-K,10-Q,4") -> list[dict]:
+def _load_cik_map() -> None:
+    global _cik_loaded, _ticker_cik
+    if _cik_loaded:
+        return
+    _cik_loaded = True  # set early so a failure doesn't loop
+    try:
+        resp = requests.get(TICKERS_URL, headers=_HEADERS, timeout=15)
+        resp.raise_for_status()
+        for entry in resp.json().values():
+            ticker = entry.get("ticker", "").upper()
+            cik    = str(entry.get("cik_str", "")).zfill(10)
+            if ticker:
+                _ticker_cik[ticker] = cik
+        print(f"[sec] Loaded {len(_ticker_cik)} ticker→CIK mappings from EDGAR")
+    except Exception as e:
+        print(f"[sec] CIK map load failed: {e}")
+
+
+# ── Main fetch ─────────────────────────────────────────────────────────────────
+
+TARGET_FORMS = {"8-K", "10-Q", "4"}
+
+
+def get_sec_filings(
+    ticker: str,
+    days_back: int = 14,
+    forms: set = TARGET_FORMS,
+    limit: int = 5,
+) -> list[dict]:
     """
-    Query recent SEC filings for a ticker using the sec-api.io full-text search endpoint.
-    Returns a list of filing summaries sorted newest first.
+    Returns recent SEC filings for a ticker filtered by form type and date.
+    Uses the official EDGAR submissions API — no key, no cap.
 
-    forms: comma-separated list of form types to include.
+    Form types:
+      8-K  — material events (earnings misses, M&A, regulatory actions)
+      10-Q — quarterly report
+      4    — insider transactions (company executives buying/selling)
     """
-    if not SEC_API_KEY or SEC_API_KEY == "your_sec_api_key_here":
-        print("[sec] SEC API key not set — skipping.")
+    _load_cik_map()
+
+    cik = _ticker_cik.get(ticker.upper())
+    if not cik:
+        print(f"[sec] No CIK found for {ticker} — skipping SEC lookup")
         return []
-
-    start_dt = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    end_dt   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    payload = {
-        "query": {
-            "query_string": {
-                "query": f'ticker:{ticker} AND formType:({" OR ".join(forms.split(","))})'
-            }
-        },
-        "dateRange": {
-            "startdt": start_dt,
-            "enddt":   end_dt,
-        },
-        "from":  "0",
-        "size":  "5",
-        "sort":  [{"filedAt": {"order": "desc"}}],
-    }
-
-    headers = {"Authorization": SEC_API_KEY}
 
     try:
-        data = fetch_with_retry(lambda: _post_json(SEC_API_BASE, payload, headers))
+        time.sleep(0.11)   # SEC rate limit: max 10 req/sec
+        resp = requests.get(
+            f"{EDGAR_BASE}/submissions/CIK{cik}.json",
+            headers=_HEADERS,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
     except Exception as e:
-        print(f"[sec] SEC API error for {ticker}: {e}")
+        print(f"[sec] EDGAR submissions fetch failed for {ticker}: {e}")
         return []
 
+    recent       = data.get("filings", {}).get("recent", {})
+    dates        = recent.get("filingDate", [])
+    form_types   = recent.get("form", [])
+    items        = recent.get("items", [])
+    accessions   = recent.get("accessionNumber", [])
+    doc_descs    = recent.get("primaryDocDescription", [])
+    company_name = data.get("name", ticker)
+
+    cutoff  = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
     results = []
-    for filing in data.get("filings", []):
+
+    for date, form, item, acc, doc_desc in zip(dates, form_types, items, accessions, doc_descs):
+        if date < cutoff:
+            break  # submissions are newest-first — stop once past the window
+        if form not in forms:
+            continue
+
+        # Build description: prefer items field (e.g. "1.01 Entry into agreement"),
+        # fall back to doc description, then form type label
+        description = (
+            item.strip() if item.strip()
+            else doc_desc.strip() if doc_desc.strip()
+            else _form_label(form)
+        )
+
+        acc_nodash = acc.replace("-", "")
+        url = (
+            f"https://www.sec.gov/Archives/edgar/data"
+            f"/{int(cik)}/{acc_nodash}/{acc}.txt"
+        )
+
         results.append({
             "ticker":       ticker,
-            "form_type":    filing.get("formType", ""),
-            "filed_at":     filing.get("filedAt", ""),
-            "company_name": filing.get("companyName", ""),
-            "description":  filing.get("description", ""),
-            "url":          filing.get("linkToFilingDetails", ""),
+            "form_type":    form,
+            "filed_at":     date,
+            "company_name": company_name,
+            "description":  description,
+            "url":          url,
         })
 
-    print(f"[sec] {len(results)} filing(s) found for {ticker} (last {days_back} days)")
+        if len(results) >= limit:
+            break
+
+    print(f"[sec] {len(results)} filing(s) found for {ticker} (last {days_back} days, EDGAR direct)")
     return results
 
 
+def _form_label(form: str) -> str:
+    return {
+        "8-K":  "Material event disclosure",
+        "10-Q": "Quarterly report",
+        "4":    "Insider transaction",
+    }.get(form, form)
+
+
+# ── Summary helper used by Claude prompt ─────────────────────────────────────
+
 def summarise_sec_filings(filings: list[dict]) -> str:
-    """Format SEC filings into a readable string for the Claude prompt."""
     if not filings:
         return "No recent SEC filings found."
-
     lines = []
     for f in filings:
-        desc = f.get("description") or "(no description)"
         lines.append(
-            f"- [{f['form_type']}] {f['company_name']} — {desc} (filed {f['filed_at'][:10]})"
+            f"- [{f['form_type']}] {f['company_name']} — {f['description']} (filed {f['filed_at']})"
         )
     return "\n".join(lines)

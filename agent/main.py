@@ -38,8 +38,10 @@ from utils.notify   import (
     notify_daily_loss_halt,
     notify_bear_market,
 )
-from data.news      import get_news_for_ticker, summarise_news, aggregate_sentiment_score
-from data.sec       import get_sec_filings, summarise_sec_filings
+from data.news         import get_news_for_ticker, summarise_news, aggregate_sentiment_score
+from data.sec          import get_sec_filings, summarise_sec_filings
+from data.contracts    import get_contract_awards, summarise_contracts
+from data.fundamentals import get_fundamentals, summarise_fundamentals
 from data.market    import get_market_regime, get_volatility, earnings_too_close, is_liquid_enough, is_above_20d_ma
 from agent.prompts      import SYSTEM_PROMPT, build_analysis_prompt, build_portfolio_review_prompt
 from agent.risk_manager import evaluate, check_exit_conditions
@@ -324,23 +326,32 @@ def scan_new_disclosures() -> None:
             log_event({"event": "skipped_momentum", "ticker": ticker, "reason": reason})
             continue
 
-        # ── Fetch news, SEC filings, and volatility in parallel ───────────────
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            news_future = pool.submit(get_news_for_ticker, ticker)
-            sec_future  = pool.submit(get_sec_filings, ticker)
-            vol_future  = pool.submit(get_volatility, ticker)
-            articles    = news_future.result()
-            sec_filings = sec_future.result()
-            volatility  = vol_future.result()
+        # ── Fetch all data sources in parallel ────────────────────────────────
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            news_future     = pool.submit(get_news_for_ticker, ticker)
+            sec_future      = pool.submit(get_sec_filings, ticker)
+            vol_future      = pool.submit(get_volatility, ticker)
+            contracts_future = pool.submit(get_contract_awards, ticker)
+            fundamentals_future = pool.submit(get_fundamentals, ticker)
+            articles        = news_future.result()
+            sec_filings     = sec_future.result()
+            volatility      = vol_future.result()
+            contracts       = contracts_future.result()
+            fundamentals    = fundamentals_future.result()
 
         print(f"[market] {ticker} annualized vol: {volatility:.1%}")
 
-        trade_summary = summarise_trades(ticker_trades)
-        news_summary  = summarise_news(articles)
-        sentiment     = aggregate_sentiment_score(articles)
-        sec_summary   = summarise_sec_filings(sec_filings)
+        trade_summary    = summarise_trades(ticker_trades)
+        news_summary     = summarise_news(articles)
+        sentiment        = aggregate_sentiment_score(articles)
+        sec_summary      = summarise_sec_filings(sec_filings)
+        contracts_summary    = summarise_contracts(contracts)
+        fundamentals_summary = summarise_fundamentals(fundamentals)
 
-        prompt   = build_analysis_prompt(trade_summary, news_summary, sentiment, portfolio_text, sec_summary)
+        prompt = build_analysis_prompt(
+            trade_summary, news_summary, sentiment, portfolio_text,
+            sec_summary, contracts_summary, fundamentals_summary,
+        )
         decision = ask_claude(prompt)
 
         # Apply regime-adjusted confidence threshold override

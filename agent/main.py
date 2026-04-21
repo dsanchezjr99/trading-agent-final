@@ -76,6 +76,55 @@ def _save_seen() -> None:
     SEEN_FILE.write_text(json.dumps([list(k) for k in _seen_disclosure_keys]))
 
 
+def _prune_seen(max_age_days: int = 60) -> None:
+    """
+    Drop any seen-disclosure key whose transaction date is older than max_age_days.
+    Prevents the file from growing unboundedly and speeds up set operations.
+    Runs once on startup.
+    """
+    global _seen_disclosure_keys
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).date()
+
+    def _parse_date_safe(s: str):
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").date()
+        except Exception:
+            return datetime.now(timezone.utc).date()  # keep unparseable entries
+
+    before = len(_seen_disclosure_keys)
+    _seen_disclosure_keys = {
+        k for k in _seen_disclosure_keys
+        if _parse_date_safe(k[2]) >= cutoff
+    }
+    removed = before - len(_seen_disclosure_keys)
+    if removed:
+        _save_seen()
+        print(f"[agent] Pruned {removed} stale entries from seen_disclosures.json (>{max_age_days}d old), {len(_seen_disclosure_keys)} remain")
+
+
+def _bootstrap_seen_if_empty() -> None:
+    """
+    Guard against mass re-analysis on a fresh start (e.g. after git clone or
+    accidental deletion of seen_disclosures.json).
+
+    If the seen file is missing, fetch the current 7-day disclosure window and
+    mark every entry as already seen WITHOUT passing anything to Claude.
+    Only disclosures that appear AFTER this startup will be treated as new.
+    """
+    if SEEN_FILE.exists() and _seen_disclosure_keys:
+        return  # Normal run — history already loaded
+
+    print("[agent] seen_disclosures.json missing or empty — bootstrapping to prevent mass re-analysis...")
+    try:
+        trades = get_all_political_trades(days_back=7)
+        for t in trades:
+            _seen_disclosure_keys.add((t["member"], t["ticker"], t["transaction_date"]))
+        _save_seen()
+        print(f"[agent] Bootstrapped {len(_seen_disclosure_keys)} existing disclosures as already seen — only new signals will trigger analysis.")
+    except Exception as e:
+        print(f"[agent] Bootstrap failed ({e}) — proceeding without guard (re-analysis may occur)")
+
+
 def _load_meta() -> dict:
     """Load per-position metadata (entry date, hold days, sector)."""
     if META_FILE.exists():
@@ -559,6 +608,9 @@ def _secs_until_eod() -> float:
 def run() -> None:
     print(f"[agent] Starting trading agent (poll every {POLL_INTERVAL} min, DRY_RUN={os.getenv('DRY_RUN')})")
     print("[agent] Press Ctrl+C to stop.\n")
+
+    _prune_seen()
+    _bootstrap_seen_if_empty()
 
     scan_new_disclosures()
     review_open_positions()

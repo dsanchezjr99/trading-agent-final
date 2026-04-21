@@ -277,29 +277,41 @@ def scan_new_disclosures() -> None:
     sector_exposure = {t: meta[t].get("sector", "Unknown") for t in open_tickers if t in meta}
 
     # ── Fetch and filter congressional disclosures ────────────────────────────
-    trades = get_all_political_trades(days_back=7)
+    # Use 14-day window so we don't miss disclosures filed on weekends or slow days.
+    trades = get_all_political_trades(days_back=14)
 
+    # Build a full recent-trade map for ALL tickers (used for gate + Claude context)
+    all_by_ticker: dict[str, list[dict]] = {}
+    for t in trades:
+        all_by_ticker.setdefault(t["ticker"], []).append(t)
+
+    # Identify only the tickers that have at least one NEW (unseen) disclosure —
+    # these are the ones that trigger evaluation this cycle.
     new_keys: set = set()
-    by_ticker: dict[str, list[dict]] = {}
+    new_tickers:  set = set()
     for t in trades:
         key = (t["member"], t["ticker"], t["transaction_date"])
         if key in _seen_disclosure_keys:
             continue
         new_keys.add(key)
         _seen_disclosure_keys.add(key)
-        by_ticker.setdefault(t["ticker"], []).append(t)
+        new_tickers.add(t["ticker"])
 
     if new_keys:
         _save_seen()
 
-    if not by_ticker:
+    if not new_tickers:
         print("[agent] No new disclosures to evaluate.")
         return
 
-    print(f"[agent] {len(by_ticker)} new ticker(s) to evaluate: {', '.join(by_ticker)}")
+    print(f"[agent] {len(new_tickers)} new ticker(s) to evaluate: {', '.join(sorted(new_tickers))}")
     portfolio_text = _portfolio_text(account, positions)
 
-    for ticker, ticker_trades in by_ticker.items():
+    for ticker in sorted(new_tickers):
+        # Use ALL recent trades for this ticker (not just new ones) so the signal
+        # gate and Claude see the full picture — e.g. a second committee member
+        # who filed last week is still context even if already seen.
+        ticker_trades = all_by_ticker.get(ticker, [])
         print(f"\n[agent] Evaluating {ticker}...")
 
         # ── Earnings calendar check ───────────────────────────────────────────
@@ -354,10 +366,6 @@ def scan_new_disclosures() -> None:
         )
         decision = ask_claude(prompt)
 
-        # Apply regime-adjusted confidence threshold override
-        if regime == "BEAR":
-            decision["_min_confidence_override"] = min_confidence
-
         log_event({"event": "analysis", "ticker": ticker, "regime": regime, "volatility": volatility, "decision": decision})
 
         approved, order, reason = evaluate(
@@ -366,11 +374,8 @@ def scan_new_disclosures() -> None:
             open_tickers,
             volatility=volatility,
             sector_exposure=sector_exposure,
+            min_confidence_override=min_confidence if regime == "BEAR" else None,
         )
-
-        # Apply BEAR regime confidence override in risk check
-        if regime == "BEAR" and not approved and "Confidence" in reason:
-            pass  # evaluate() uses MIN_CONFIDENCE from env; BEAR adjustment logged above
 
         print(f"[risk] {reason}")
 

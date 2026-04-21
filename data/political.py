@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 from utils import fetch_with_retry
-from data.committees import get_committee_tag
+from data.committees import get_committee_tag, get_member_committees
 
 load_dotenv()
 
@@ -230,32 +230,68 @@ def get_all_political_trades(days_back: int = 7) -> list[dict]:
 
 def passes_signal_gate(trades: list[dict]) -> tuple[bool, str]:
     """
-    Option B — Rules-based signal gate.
-    Requires ALL of the following before passing to Claude:
-      1. At least 2 unique buyers
-      2. Buyers outnumber sellers (net bullish)
-      3. Aggregate disclosed minimum amount >= $50,000
+    Rules-based signal gate. Two paths to pass:
+
+    Path A — Committee member (single buyer OK):
+      - Exactly 1 unique buyer who sits on a market-relevant committee
+      - Sellers must not outnumber buyers
+      - Aggregate purchase ≥ MIN_TRADE_AMOUNT
+      Rationale: a single Armed Services / Intel / Finance committee member
+      buying a stock in their oversight sector is high-conviction on its own.
+
+    Path B — Multi-buyer consensus (no committee required):
+      - At least 2 unique buyers
+      - Buyers outnumber sellers
+      - Aggregate purchase ≥ $50,000
 
     Returns (passed, reason).
     """
     buyers  = [t for t in trades if "purchase" in t.get("transaction_type", "").lower()]
-    sellers = [t for t in trades if "sale" in t.get("transaction_type", "").lower()
+    sellers = [t for t in trades if "sale"     in t.get("transaction_type", "").lower()
                and "purchase" not in t.get("transaction_type", "").lower()]
 
-    unique_buyers = len({t["member"] for t in buyers})
+    if not buyers:
+        return False, "Signal gate: no buyers found"
 
+    unique_buyers = len({t["member"] for t in buyers})
     aggregate_min = sum(_parse_min_amount(t.get("amount_range", "")) for t in buyers)
 
-    if unique_buyers < 2:
-        return False, f"Signal gate: only {unique_buyers} unique buyer(s) — need ≥2"
-
+    # Sellers must never outnumber buyers regardless of path
     if len(sellers) >= len(buyers):
-        return False, f"Signal gate: {len(sellers)} seller(s) vs {len(buyers)} buyer(s) — not net bullish"
+        return False, (
+            f"Signal gate: {len(sellers)} seller(s) vs {len(buyers)} buyer(s) — not net bullish"
+        )
 
+    # ── Path A: single committee member ──────────────────────────────────────
+    if unique_buyers == 1:
+        member     = buyers[0]["member"]
+        committees = get_member_committees(member)
+        if not committees:
+            return False, (
+                f"Signal gate: single buyer ({member}) has no committee membership"
+                f" — need ≥2 non-committee buyers for this signal"
+            )
+        if aggregate_min < MIN_TRADE_AMOUNT:
+            return False, (
+                f"Signal gate: committee member {member} — "
+                f"${aggregate_min:,} below ${MIN_TRADE_AMOUNT:,} minimum"
+            )
+        cmte_str = ", ".join(committees[:2])
+        return True, (
+            f"Signal gate passed [committee]: {member} [{cmte_str}] — "
+            f"${aggregate_min:,} purchase"
+        )
+
+    # ── Path B: multi-buyer consensus ─────────────────────────────────────────
     if aggregate_min < 50_000:
-        return False, f"Signal gate: aggregate buy amount ${aggregate_min:,} below $50,000 threshold"
+        return False, (
+            f"Signal gate: aggregate ${aggregate_min:,} below $50,000 threshold"
+        )
 
-    return True, f"Signal gate passed: {unique_buyers} buyers, ${aggregate_min:,} aggregate, {len(sellers)} sellers"
+    return True, (
+        f"Signal gate passed: {unique_buyers} buyers, ${aggregate_min:,} aggregate, "
+        f"{len(sellers)} seller(s)"
+    )
 
 
 def _signal_strength(transaction_date: str, max_days: int = 30) -> str:

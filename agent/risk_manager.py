@@ -24,11 +24,12 @@ HARD_CAP_PCT         = float(os.getenv("HARD_CAP_PCT", MAX_POSITION_PCT))
 
 
 def evaluate(
-    decision:        dict,
-    portfolio_value: float,
-    open_positions:  list[str],
-    volatility:      float = 0.20,
-    sector_exposure: dict  = None,   # {ticker: sector} for currently open positions
+    decision:                dict,
+    portfolio_value:         float,
+    open_positions:          list[str],
+    volatility:              float = 0.20,
+    sector_exposure:         dict  = None,
+    min_confidence_override: float | None = None,  # used in BEAR regime to raise threshold
 ) -> tuple[bool, dict | None, str]:
     """
     Validate an AI trade decision through 7 gates, then size the position.
@@ -47,13 +48,15 @@ def evaluate(
     risk_level = decision.get("risk_level", "HIGH").upper()
     sector     = decision.get("sector", "Unknown")
 
+    effective_min_conf = min_confidence_override if min_confidence_override is not None else MIN_CONFIDENCE
+
     # ── Gate 1: HOLD passthrough ──────────────────────────────────────────────
     if action == "HOLD":
         return False, None, "AI decided HOLD — no order placed."
 
     # ── Gate 2: Minimum confidence ────────────────────────────────────────────
-    if confidence < MIN_CONFIDENCE:
-        return False, None, f"Confidence {confidence:.0%} below threshold {MIN_CONFIDENCE:.0%}."
+    if confidence < effective_min_conf:
+        return False, None, f"Confidence {confidence:.0%} below threshold {effective_min_conf:.0%}."
 
     # ── Gate 3: Reject HIGH-risk signals ──────────────────────────────────────
     if risk_level == "HIGH":

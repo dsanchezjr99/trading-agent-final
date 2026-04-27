@@ -22,6 +22,10 @@ QUIVER_BASE    = "https://api.quiverquant.com/beta"
 HOUSE_URL  = "https://house-stock-watcher-data.s3-us-east-2.amazonaws.com/data/all_transactions.json"
 SENATE_URL = "https://senate-stock-watcher-data.s3-us-east-2.amazonaws.com/aggregate/all_transactions.json"
 
+# Track whether each S3 source has been confirmed down this session to avoid repeated noise.
+_house_watcher_down: bool = False
+_senate_watcher_down: bool = False
+
 # Only evaluate trades where the stated minimum dollar amount is at or above this threshold.
 # Removes the $1k–$15k small trades that are portfolio noise, not conviction signals.
 MIN_TRADE_AMOUNT = int(os.getenv("MIN_TRADE_AMOUNT", 15000))
@@ -71,22 +75,37 @@ def _parse_date(date_str: str) -> datetime | None:
 def _fetch_json(url: str, **kwargs) -> list | dict:
     resp = requests.get(url, **kwargs)
     resp.raise_for_status()
+    if not resp.content or not resp.text.strip():
+        raise ValueError("Empty response body")
     return resp.json()
 
 
 # ── House Stock Watcher ──────────────────────────────────────────────────────
 
 def get_house_trades(days_back: int = 7) -> list[dict]:
-    """Return House member trades filed within the last `days_back` days."""
+    """
+    Return House member trades filed within the last `days_back` days.
+    Fails fast (no retry) if the S3 source is down — logs once per session.
+    """
+    global _house_watcher_down
+    if _house_watcher_down:
+        return []
     try:
-        trades = fetch_with_retry(lambda: _fetch_json(HOUSE_URL, timeout=15))
+        resp = requests.get(HOUSE_URL, timeout=15, allow_redirects=True)
+        resp.raise_for_status()
+        if not resp.content or not resp.text.strip():
+            raise ValueError("Empty response")
+        content_type = resp.headers.get("Content-Type", "")
+        if "xml" in content_type or resp.text.strip().startswith("<"):
+            raise ValueError(f"Non-JSON response (got XML/HTML): {resp.text[:80]}")
+        trades = resp.json()
     except Exception as e:
-        print(f"[political] House fetch error: {e}")
+        _house_watcher_down = True
+        print(f"[political] House Stock Watcher unavailable — source may be down ({type(e).__name__}). Will rely on Quiver.")
         return []
 
     cutoff  = _days_ago(days_back)
     results = []
-
     for t in trades:
         filed = _parse_date(t.get("disclosure_date") or t.get("transaction_date", ""))
         if not filed or filed < cutoff:
@@ -104,23 +123,35 @@ def get_house_trades(days_back: int = 7) -> list[dict]:
             "transaction_date": t.get("transaction_date", ""),
             "disclosure_date":  t.get("disclosure_date", ""),
         })
-
     return results
 
 
 # ── Senate Stock Watcher ─────────────────────────────────────────────────────
 
 def get_senate_trades(days_back: int = 7) -> list[dict]:
-    """Return Senate member trades filed within the last `days_back` days."""
+    """
+    Return Senate member trades filed within the last `days_back` days.
+    Fails fast (no retry) if the S3 source is down — logs once per session.
+    """
+    global _senate_watcher_down
+    if _senate_watcher_down:
+        return []
     try:
-        trades = fetch_with_retry(lambda: _fetch_json(SENATE_URL, timeout=15))
+        resp = requests.get(SENATE_URL, timeout=15, allow_redirects=True)
+        resp.raise_for_status()
+        if not resp.content or not resp.text.strip():
+            raise ValueError("Empty response")
+        content_type = resp.headers.get("Content-Type", "")
+        if "xml" in content_type or resp.text.strip().startswith("<"):
+            raise ValueError(f"Non-JSON response (got XML/HTML): {resp.text[:80]}")
+        trades = resp.json()
     except Exception as e:
-        print(f"[political] Senate fetch error: {e}")
+        _senate_watcher_down = True
+        print(f"[political] Senate Stock Watcher unavailable — source may be down ({type(e).__name__}). Will rely on Quiver.")
         return []
 
     cutoff  = _days_ago(days_back)
     results = []
-
     for t in trades:
         filed = _parse_date(t.get("disclosure_date") or t.get("transaction_date", ""))
         if not filed or filed < cutoff:
@@ -138,7 +169,6 @@ def get_senate_trades(days_back: int = 7) -> list[dict]:
             "transaction_date": t.get("transaction_date", ""),
             "disclosure_date":  t.get("disclosure_date", ""),
         })
-
     return results
 
 

@@ -339,17 +339,24 @@ def scan_new_disclosures() -> None:
             continue
 
         # ── Fetch all data sources in parallel ────────────────────────────────
-        with ThreadPoolExecutor(max_workers=5) as pool:
-            news_future     = pool.submit(get_news_for_ticker, ticker)
-            sec_future      = pool.submit(get_sec_filings, ticker)
-            vol_future      = pool.submit(get_volatility, ticker)
-            contracts_future = pool.submit(get_contract_awards, ticker)
-            fundamentals_future = pool.submit(get_fundamentals, ticker)
-            articles        = news_future.result()
-            sec_filings     = sec_future.result()
-            volatility      = vol_future.result()
-            contracts       = contracts_future.result()
-            fundamentals    = fundamentals_future.result()
+        # timeout=45 on each future prevents a hung yfinance/network call
+        # from freezing the entire agent indefinitely.
+        try:
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                news_future         = pool.submit(get_news_for_ticker, ticker)
+                sec_future          = pool.submit(get_sec_filings, ticker)
+                vol_future          = pool.submit(get_volatility, ticker)
+                contracts_future    = pool.submit(get_contract_awards, ticker)
+                fundamentals_future = pool.submit(get_fundamentals, ticker)
+                articles     = news_future.result(timeout=45)
+                sec_filings  = sec_future.result(timeout=45)
+                volatility   = vol_future.result(timeout=45)
+                contracts    = contracts_future.result(timeout=45)
+                fundamentals = fundamentals_future.result(timeout=45)
+        except Exception as e:
+            print(f"[agent] Data fetch timed out or failed for {ticker}: {e} — skipping")
+            log_event({"event": "skipped_fetch_timeout", "ticker": ticker, "error": str(e)})
+            continue
 
         print(f"[market] {ticker} annualized vol: {volatility:.1%}")
 
